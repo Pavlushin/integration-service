@@ -104,7 +104,7 @@ func main() {
 		log.Error("failed to initialize prepare processor", zap.Error(err))
 		os.Exit(1)
 	}
-	deliveryProcessor, err := engine.NewDeliveryProcessor(jobRepository, fileStorage)
+	deliveryProcessor, err := engine.NewDeliveryProcessor(jobRepository, outboxRepository, idgen.NewUUIDGenerator(), fileStorage)
 	if err != nil {
 		log.Error("failed to initialize delivery processor", zap.Error(err))
 		os.Exit(1)

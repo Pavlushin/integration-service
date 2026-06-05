@@ -87,24 +87,30 @@ func (c *Consumer) handleDelivery(ctx context.Context, queueName string, deliver
 
 	var message queue.Message
 	if err := json.Unmarshal(delivery.Body, &message); err != nil {
-		_ = delivery.Ack(false)
+		if ackErr := delivery.Ack(false); ackErr != nil {
+			return fmt.Errorf("ack malformed queue message: %w", ackErr)
+		}
 		log.Error("queue message decode failed", zap.Error(err))
-		return fmt.Errorf("decode queue message: %w", err)
+		return nil
 	}
 
 	if message.JobID == "" {
-		_ = delivery.Ack(false)
+		if ackErr := delivery.Ack(false); ackErr != nil {
+			return fmt.Errorf("ack queue message with empty job_id: %w", ackErr)
+		}
 		log.Error("queue message job_id is empty")
-		return fmt.Errorf("queue message job_id is empty")
+		return nil
 	}
 
 	log = log.With(zap.String("job_id", message.JobID))
 	log.Info("queue message processing started")
 
 	if err := handler(ctx, message); err != nil {
-		_ = delivery.Nack(false, true)
+		if nackErr := delivery.Nack(false, true); nackErr != nil {
+			return fmt.Errorf("nack failed queue message: %w", nackErr)
+		}
 		log.Error("queue message handler failed; message requeued", zap.Error(err))
-		return fmt.Errorf("handle queue message: %w", err)
+		return nil
 	}
 
 	if err := delivery.Ack(false); err != nil {

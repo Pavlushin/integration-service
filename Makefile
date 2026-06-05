@@ -1,8 +1,8 @@
 SHELL := /bin/zsh
 
 PROJECT_ROOT := $(CURDIR)
-COMPOSE := PROJECT_ROOT=$(PROJECT_ROOT) docker compose --env-file .env -f deployments/docker-compose.yml
-GO := GOCACHE=$(PROJECT_ROOT)/.gocache go
+COMPOSE := env PROJECT_ROOT="$(PROJECT_ROOT)" docker compose --env-file .env -f deployments/docker-compose.yml
+GO := env GOCACHE="$(PROJECT_ROOT)/.gocache" go
 
 .PHONY: dev-up dev-down dev-logs postgres-migrate api worker api-dev worker-dev stack stack-up \
 	pg-forward-up pg-forward-down rabbit-forward-up rabbit-forward-down rabbit-ui-forward-up rabbit-ui-forward-down rabbit-ui-forward-restart \
