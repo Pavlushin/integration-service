@@ -20,6 +20,7 @@ type DeliveryProcessor struct {
 	outbox  OutboxWriter
 	ids     IDGenerator
 	storage storage.Storage
+	retry   RetryPolicy
 }
 
 func NewDeliveryProcessor(
@@ -27,6 +28,7 @@ func NewDeliveryProcessor(
 	outboxWriter OutboxWriter,
 	ids IDGenerator,
 	storageProvider storage.Storage,
+	retryPolicy RetryPolicy,
 ) (*DeliveryProcessor, error) {
 	switch {
 	case jobs == nil:
@@ -44,6 +46,7 @@ func NewDeliveryProcessor(
 		outbox:  outboxWriter,
 		ids:     ids,
 		storage: storageProvider,
+		retry:   retryPolicy.WithDefaults(),
 	}, nil
 }
 
@@ -129,7 +132,7 @@ func (p *DeliveryProcessor) Process(ctx context.Context, jobID string) error {
 
 func (p *DeliveryProcessor) recordFailure(ctx context.Context, log *logger.Logger, job enginejob.Job, err error) error {
 	log.Error("delivery job processing failed", zap.Error(err))
-	if recordErr := recordProcessingFailure(ctx, p.jobs, p.outbox, p.ids, DeliveryTopic, job, err); recordErr != nil {
+	if recordErr := recordProcessingFailure(ctx, p.retry, p.jobs, p.outbox, p.ids, DeliveryTopic, job, err); recordErr != nil {
 		return recordErr
 	}
 	return nil

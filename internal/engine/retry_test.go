@@ -77,6 +77,7 @@ func TestRecordProcessingFailureSchedulesRetryBeforeAttemptLimit(t *testing.T) {
 
 	err := recordProcessingFailure(
 		context.Background(),
+		RetryPolicy{MaxAttempts: 4, Backoff: 2 * time.Second},
 		repo,
 		outboxWriter,
 		retryIDGenerator{next: "retry-outbox-1"},
@@ -114,6 +115,9 @@ func TestRecordProcessingFailureSchedulesRetryBeforeAttemptLimit(t *testing.T) {
 	if record.CreatedAt.IsZero() || time.Since(record.CreatedAt) > time.Minute {
 		t.Fatalf("expected recent created_at, got %v", record.CreatedAt)
 	}
+	if record.AvailableAt.Sub(record.CreatedAt) != 2*time.Second {
+		t.Fatalf("expected retry available_at to be created_at + 2s, got %s", record.AvailableAt.Sub(record.CreatedAt))
+	}
 
 	var payload map[string]string
 	if err := json.Unmarshal(record.PayloadJSON, &payload); err != nil {
@@ -127,13 +131,15 @@ func TestRecordProcessingFailureSchedulesRetryBeforeAttemptLimit(t *testing.T) {
 func TestRecordProcessingFailureMovesJobToDLQAtAttemptLimit(t *testing.T) {
 	repo := &retryJobRepository{}
 	outboxWriter := &retryOutboxWriter{}
+	policy := RetryPolicy{MaxAttempts: 5, Backoff: 2 * time.Second}
 	job := enginejob.Job{
 		ID:       "job-1",
-		Attempts: maxProcessingAttempts - 1,
+		Attempts: policy.MaxAttempts - 1,
 	}
 
 	err := recordProcessingFailure(
 		context.Background(),
+		policy,
 		repo,
 		outboxWriter,
 		retryIDGenerator{next: "retry-outbox-1"},
@@ -156,5 +162,18 @@ func TestRecordProcessingFailureMovesJobToDLQAtAttemptLimit(t *testing.T) {
 	}
 	if len(outboxWriter.records) != 0 {
 		t.Fatalf("expected no retry outbox records at attempt limit, got %d", len(outboxWriter.records))
+	}
+}
+
+func TestRetryPolicyWithDefaults(t *testing.T) {
+	policy := RetryPolicy{}
+
+	normalized := policy.WithDefaults()
+
+	if normalized.MaxAttempts != 3 {
+		t.Fatalf("expected default max attempts 3, got %d", normalized.MaxAttempts)
+	}
+	if normalized.Backoff != time.Second {
+		t.Fatalf("expected default backoff 1s, got %s", normalized.Backoff)
 	}
 }

@@ -10,6 +10,7 @@ type Record struct {
 	Topic       string
 	PayloadJSON json.RawMessage
 	CreatedAt   time.Time
+	AvailableAt time.Time
 	PublishedAt *time.Time
 	LastError   string
 }

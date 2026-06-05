@@ -11,10 +11,29 @@ import (
 	"onec-integration/internal/outbox"
 )
 
-const maxProcessingAttempts = 3
+const (
+	defaultMaxProcessingAttempts = 3
+	defaultRetryBackoff          = time.Second
+)
+
+type RetryPolicy struct {
+	MaxAttempts int
+	Backoff     time.Duration
+}
+
+func (p RetryPolicy) WithDefaults() RetryPolicy {
+	if p.MaxAttempts <= 0 {
+		p.MaxAttempts = defaultMaxProcessingAttempts
+	}
+	if p.Backoff <= 0 {
+		p.Backoff = defaultRetryBackoff
+	}
+	return p
+}
 
 func recordProcessingFailure(
 	ctx context.Context,
+	policy RetryPolicy,
 	jobs JobRepository,
 	outboxWriter OutboxWriter,
 	ids IDGenerator,
@@ -37,6 +56,7 @@ func recordProcessingFailure(
 	if cause == nil {
 		cause = errors.New("processing failed")
 	}
+	policy = policy.WithDefaults()
 
 	lastError := cause.Error()
 	if err := jobs.IncrementAttempts(ctx, job.ID, lastError); err != nil {
@@ -44,7 +64,7 @@ func recordProcessingFailure(
 	}
 
 	nextAttempt := job.Attempts + 1
-	if nextAttempt >= maxProcessingAttempts {
+	if nextAttempt >= policy.MaxAttempts {
 		if err := jobs.UpdateStatus(ctx, job.ID, enginejob.StatusDLQ, lastError); err != nil {
 			return fmt.Errorf("mark job dlq after processing failure: %w", err)
 		}
@@ -62,11 +82,13 @@ func recordProcessingFailure(
 		return fmt.Errorf("marshal retry outbox payload: %w", err)
 	}
 
+	now := time.Now().UTC()
 	record := outbox.Record{
 		ID:          ids.NewID(),
 		Topic:       retryTopic,
 		PayloadJSON: messagePayload,
-		CreatedAt:   time.Now().UTC(),
+		CreatedAt:   now,
+		AvailableAt: now.Add(policy.Backoff),
 	}
 	if err := outboxWriter.Enqueue(ctx, record); err != nil {
 		return fmt.Errorf("enqueue retry outbox record: %w", err)
