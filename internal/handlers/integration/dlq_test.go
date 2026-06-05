@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,17 +10,20 @@ import (
 	"testing"
 	"time"
 
+	"onec-integration/internal/engine"
 	enginejob "onec-integration/internal/engine/job"
 
 	"github.com/go-chi/chi/v5"
 )
 
 type fakeDLQController struct {
-	listLimit   int
-	requeueID   string
-	listErr     error
-	requeueErr  error
-	requeuedJob enginejob.Job
+	listLimit    int
+	requeueID    string
+	listErr      error
+	requeueErr   error
+	requeuedJob  enginejob.Job
+	requeueInput engine.RequeueDLQInput
+	auditJobID   string
 }
 
 func (c *fakeDLQController) ListDLQJobs(_ context.Context, limit int) ([]enginejob.Job, error) {
@@ -40,12 +44,24 @@ func (c *fakeDLQController) ListDLQJobs(_ context.Context, limit int) ([]enginej
 	}}, nil
 }
 
-func (c *fakeDLQController) RequeueDLQJob(_ context.Context, jobID string) (enginejob.Job, error) {
-	c.requeueID = jobID
+func (c *fakeDLQController) RequeueDLQJob(_ context.Context, input engine.RequeueDLQInput) (enginejob.Job, error) {
+	c.requeueID = input.JobID
+	c.requeueInput = input
 	if c.requeueErr != nil {
 		return enginejob.Job{}, c.requeueErr
 	}
 	return c.requeuedJob, nil
+}
+
+func (c *fakeDLQController) ListJobAudit(_ context.Context, jobID string, _ int) ([]engine.JobAuditRecord, error) {
+	c.auditJobID = jobID
+	return []engine.JobAuditRecord{{
+		ID:     "audit-1",
+		JobID:  jobID,
+		Action: engine.JobAuditActionDLQRequeue,
+		Actor:  "codex",
+		Reason: "manual retry",
+	}}, nil
 }
 
 func TestDLQListRoute(t *testing.T) {
@@ -95,7 +111,10 @@ func TestDLQRequeueRoute(t *testing.T) {
 	}
 	RegisterDLQRoutes(router, controller)
 
-	req := httptest.NewRequest(http.MethodPost, "/integration/api/v1/dlq/jobs/job-1/requeue", nil)
+	requestBody := bytes.NewBufferString(`{"reason":"manual retry after product api recovery"}`)
+	req := httptest.NewRequest(http.MethodPost, "/integration/api/v1/dlq/jobs/job-1/requeue", requestBody)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Actor", "codex")
 	resp := httptest.NewRecorder()
 
 	router.ServeHTTP(resp, req)
@@ -106,17 +125,23 @@ func TestDLQRequeueRoute(t *testing.T) {
 	if controller.requeueID != "job-1" {
 		t.Fatalf("expected job-1 requeue, got %q", controller.requeueID)
 	}
+	if controller.requeueInput.Actor != "codex" {
+		t.Fatalf("expected actor codex, got %q", controller.requeueInput.Actor)
+	}
+	if controller.requeueInput.Reason != "manual retry after product api recovery" {
+		t.Fatalf("expected requeue reason, got %q", controller.requeueInput.Reason)
+	}
 
-	var body struct {
+	var responseBody struct {
 		JobID    string `json:"job_id"`
 		Status   string `json:"status"`
 		Requeued bool   `json:"requeued"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&responseBody); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.JobID != "job-1" || body.Status != "retrying" || !body.Requeued {
-		t.Fatalf("unexpected requeue response: %#v", body)
+	if responseBody.JobID != "job-1" || responseBody.Status != "retrying" || !responseBody.Requeued {
+		t.Fatalf("unexpected requeue response: %#v", responseBody)
 	}
 }
 
@@ -132,5 +157,39 @@ func TestDLQRequeueRouteReturnsBadRequestForServiceError(t *testing.T) {
 
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestDLQAuditRoute(t *testing.T) {
+	router := chi.NewRouter()
+	controller := &fakeDLQController{}
+	RegisterDLQRoutes(router, controller)
+
+	req := httptest.NewRequest(http.MethodGet, "/integration/api/v1/dlq/jobs/job-1/audit", nil)
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.Code, resp.Body.String())
+	}
+	if controller.auditJobID != "job-1" {
+		t.Fatalf("expected audit lookup for job-1, got %q", controller.auditJobID)
+	}
+
+	var body struct {
+		Audit []struct {
+			ID     string `json:"id"`
+			JobID  string `json:"job_id"`
+			Action string `json:"action"`
+			Actor  string `json:"actor"`
+			Reason string `json:"reason"`
+		} `json:"audit"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode audit response: %v", err)
+	}
+	if len(body.Audit) != 1 || body.Audit[0].ID != "audit-1" || body.Audit[0].Action != engine.JobAuditActionDLQRequeue {
+		t.Fatalf("unexpected audit response: %#v", body.Audit)
 	}
 }

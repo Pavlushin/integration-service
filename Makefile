@@ -6,7 +6,7 @@ GO := env GOCACHE="$(PROJECT_ROOT)/.gocache" go
 
 .PHONY: dev-up dev-down dev-logs postgres-migrate api worker api-dev worker-dev stack stack-up \
 	pg-forward-up pg-forward-down rabbit-forward-up rabbit-forward-down rabbit-ui-forward-up rabbit-ui-forward-down rabbit-ui-forward-restart \
-	db-shell db-jobs db-jobs-full db-outbox log-tail logs-corr logs-job trace build fmt
+	db-shell db-jobs db-jobs-full db-outbox db-audit log-tail logs-corr logs-job trace build fmt
 
 dev-up:
 	$(COMPOSE) --profile forwarders up -d postgres rabbitmq postgres-port-forwarder rabbitmq-port-forwarder rabbitmq-management-forwarder
@@ -66,6 +66,9 @@ db-jobs-full:
 db-outbox:
 	$(COMPOSE) exec -T postgres sh -lc 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -c "SELECT id, topic, payload_json, created_at, available_at, published_at, last_error FROM integration_outbox ORDER BY created_at DESC LIMIT 20;"'
 
+db-audit:
+	$(COMPOSE) exec -T postgres sh -lc 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -c "SELECT id, job_id, action, actor, reason, metadata_json, created_at FROM integration_job_audit ORDER BY created_at DESC LIMIT 20;"'
+
 log-tail:
 	@tail -n 100 $$(ls -1t out/logs/*.log | head -n 2)
 
@@ -83,6 +86,8 @@ trace:
 	@$(COMPOSE) exec -T postgres sh -lc 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -c "SELECT id, correlation_id, parent_id, type, kind, direction, status, dedupe_key, result_path, attempts, created_at, started_at, finished_at FROM integration_jobs WHERE correlation_id = '\''$(CORR)'\'' ORDER BY created_at ASC;"'
 	@printf '\n== OUTBOX ==\n'
 	@$(COMPOSE) exec -T postgres sh -lc 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -c "SELECT o.id, o.topic, o.payload_json, o.created_at, o.available_at, o.published_at, o.last_error FROM integration_outbox o WHERE EXISTS (SELECT 1 FROM integration_jobs j WHERE j.correlation_id = '\''$(CORR)'\'' AND o.payload_json ->> '\''job_id'\'' = j.id) ORDER BY o.created_at ASC;"'
+	@printf '\n== AUDIT ==\n'
+	@$(COMPOSE) exec -T postgres sh -lc 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -c "SELECT a.id, a.job_id, a.action, a.actor, a.reason, a.metadata_json, a.created_at FROM integration_job_audit a WHERE EXISTS (SELECT 1 FROM integration_jobs j WHERE j.correlation_id = '\''$(CORR)'\'' AND a.job_id = j.id) ORDER BY a.created_at ASC;"'
 	@printf '\n== LOGS ==\n'
 	@grep -h "$(CORR)" out/logs/*.log || true
 

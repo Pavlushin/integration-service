@@ -53,12 +53,35 @@ func (g dlqIDGenerator) NewID() string {
 	return g.next
 }
 
-func TestDLQServiceListsDLQJobs(t *testing.T) {
-	repo := &dlqJobRepository{job: enginejob.Job{ID: "job-1", Status: enginejob.StatusDLQ}}
-	service, err := NewDLQService(repo, &dlqOutboxWriter{}, dlqIDGenerator{next: "outbox-1"})
+type dlqAuditWriter struct {
+	records   []JobAuditRecord
+	listJobID string
+	listLimit int
+}
+
+func (w *dlqAuditWriter) RecordJobAudit(_ context.Context, record JobAuditRecord) error {
+	w.records = append(w.records, record)
+	return nil
+}
+
+func (w *dlqAuditWriter) ListJobAudit(_ context.Context, jobID string, limit int) ([]JobAuditRecord, error) {
+	w.listJobID = jobID
+	w.listLimit = limit
+	return w.records, nil
+}
+
+func newTestDLQService(t *testing.T, jobs *dlqJobRepository, outboxWriter *dlqOutboxWriter, auditWriter *dlqAuditWriter) *DLQService {
+	t.Helper()
+	service, err := NewDLQService(jobs, outboxWriter, auditWriter, dlqIDGenerator{next: "outbox-1"})
 	if err != nil {
 		t.Fatalf("create dlq service: %v", err)
 	}
+	return service
+}
+
+func TestDLQServiceListsDLQJobs(t *testing.T) {
+	repo := &dlqJobRepository{job: enginejob.Job{ID: "job-1", Status: enginejob.StatusDLQ}}
+	service := newTestDLQService(t, repo, &dlqOutboxWriter{}, &dlqAuditWriter{})
 
 	jobs, err := service.ListDLQJobs(context.Background(), 25)
 
@@ -85,12 +108,14 @@ func TestDLQServiceRequeuesDLQJob(t *testing.T) {
 		LastError: "product api unavailable",
 	}}
 	outboxWriter := &dlqOutboxWriter{}
-	service, err := NewDLQService(repo, outboxWriter, dlqIDGenerator{next: "outbox-1"})
-	if err != nil {
-		t.Fatalf("create dlq service: %v", err)
-	}
+	auditWriter := &dlqAuditWriter{}
+	service := newTestDLQService(t, repo, outboxWriter, auditWriter)
 
-	requeued, err := service.RequeueDLQJob(context.Background(), "job-1")
+	requeued, err := service.RequeueDLQJob(context.Background(), RequeueDLQInput{
+		JobID:  "job-1",
+		Actor:  "codex",
+		Reason: "manual retry after product api recovery",
+	})
 
 	if err != nil {
 		t.Fatalf("requeue dlq job: %v", err)
@@ -129,6 +154,33 @@ func TestDLQServiceRequeuesDLQJob(t *testing.T) {
 	if payload["job_id"] != "job-1" {
 		t.Fatalf("expected job_id job-1, got %q", payload["job_id"])
 	}
+	if len(auditWriter.records) != 1 {
+		t.Fatalf("expected one audit record, got %d", len(auditWriter.records))
+	}
+
+	audit := auditWriter.records[0]
+	if audit.JobID != "job-1" {
+		t.Fatalf("expected audit job_id job-1, got %q", audit.JobID)
+	}
+	if audit.Action != JobAuditActionDLQRequeue {
+		t.Fatalf("expected audit action %q, got %q", JobAuditActionDLQRequeue, audit.Action)
+	}
+	if audit.Actor != "codex" {
+		t.Fatalf("expected audit actor codex, got %q", audit.Actor)
+	}
+	if audit.Reason != "manual retry after product api recovery" {
+		t.Fatalf("expected audit reason, got %q", audit.Reason)
+	}
+	if audit.CreatedAt.IsZero() {
+		t.Fatal("expected audit created_at to be set")
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal(audit.MetadataJSON, &metadata); err != nil {
+		t.Fatalf("decode audit metadata: %v", err)
+	}
+	if metadata["status_before"] != "dlq" || metadata["status_after"] != "retrying" {
+		t.Fatalf("unexpected audit metadata: %#v", metadata)
+	}
 }
 
 func TestDLQServiceRejectsNonDLQJob(t *testing.T) {
@@ -138,12 +190,9 @@ func TestDLQServiceRejectsNonDLQJob(t *testing.T) {
 		Status: enginejob.StatusRetrying,
 	}}
 	outboxWriter := &dlqOutboxWriter{}
-	service, err := NewDLQService(repo, outboxWriter, dlqIDGenerator{next: "outbox-1"})
-	if err != nil {
-		t.Fatalf("create dlq service: %v", err)
-	}
+	service := newTestDLQService(t, repo, outboxWriter, &dlqAuditWriter{})
 
-	_, err = service.RequeueDLQJob(context.Background(), "job-1")
+	_, err := service.RequeueDLQJob(context.Background(), RequeueDLQInput{JobID: "job-1"})
 
 	if err == nil {
 		t.Fatal("expected non-dlq job requeue to fail")
@@ -162,12 +211,9 @@ func TestDLQServiceRejectsUnknownJobKind(t *testing.T) {
 		Kind:   enginejob.Kind("unknown"),
 		Status: enginejob.StatusDLQ,
 	}}
-	service, err := NewDLQService(repo, &dlqOutboxWriter{}, dlqIDGenerator{next: "outbox-1"})
-	if err != nil {
-		t.Fatalf("create dlq service: %v", err)
-	}
+	service := newTestDLQService(t, repo, &dlqOutboxWriter{}, &dlqAuditWriter{})
 
-	_, err = service.RequeueDLQJob(context.Background(), "job-1")
+	_, err := service.RequeueDLQJob(context.Background(), RequeueDLQInput{JobID: "job-1"})
 
 	if err == nil {
 		t.Fatal("expected unknown job kind requeue to fail")
@@ -176,12 +222,9 @@ func TestDLQServiceRejectsUnknownJobKind(t *testing.T) {
 
 func TestDLQServiceDefaultListLimit(t *testing.T) {
 	repo := &dlqJobRepository{job: enginejob.Job{ID: "job-1", Status: enginejob.StatusDLQ}}
-	service, err := NewDLQService(repo, &dlqOutboxWriter{}, dlqIDGenerator{next: "outbox-1"})
-	if err != nil {
-		t.Fatalf("create dlq service: %v", err)
-	}
+	service := newTestDLQService(t, repo, &dlqOutboxWriter{}, &dlqAuditWriter{})
 
-	_, err = service.ListDLQJobs(context.Background(), 0)
+	_, err := service.ListDLQJobs(context.Background(), 0)
 
 	if err != nil {
 		t.Fatalf("list dlq jobs: %v", err)
@@ -193,12 +236,9 @@ func TestDLQServiceDefaultListLimit(t *testing.T) {
 
 func TestDLQServiceCapsListLimit(t *testing.T) {
 	repo := &dlqJobRepository{job: enginejob.Job{ID: "job-1", Status: enginejob.StatusDLQ}}
-	service, err := NewDLQService(repo, &dlqOutboxWriter{}, dlqIDGenerator{next: "outbox-1"})
-	if err != nil {
-		t.Fatalf("create dlq service: %v", err)
-	}
+	service := newTestDLQService(t, repo, &dlqOutboxWriter{}, &dlqAuditWriter{})
 
-	_, err = service.ListDLQJobs(context.Background(), maxDLQLimit+1)
+	_, err := service.ListDLQJobs(context.Background(), maxDLQLimit+1)
 
 	if err != nil {
 		t.Fatalf("list dlq jobs: %v", err)
@@ -215,12 +255,9 @@ func TestDLQServiceRequeueSetsRecentTimestamp(t *testing.T) {
 		Status: enginejob.StatusDLQ,
 	}}
 	outboxWriter := &dlqOutboxWriter{}
-	service, err := NewDLQService(repo, outboxWriter, dlqIDGenerator{next: "outbox-1"})
-	if err != nil {
-		t.Fatalf("create dlq service: %v", err)
-	}
+	service := newTestDLQService(t, repo, outboxWriter, &dlqAuditWriter{})
 
-	_, err = service.RequeueDLQJob(context.Background(), "job-1")
+	_, err := service.RequeueDLQJob(context.Background(), RequeueDLQInput{JobID: "job-1"})
 
 	if err != nil {
 		t.Fatalf("requeue dlq job: %v", err)
@@ -231,5 +268,38 @@ func TestDLQServiceRequeueSetsRecentTimestamp(t *testing.T) {
 	}
 	if time.Since(record.CreatedAt) > time.Minute {
 		t.Fatalf("expected recent created_at, got %v", record.CreatedAt)
+	}
+}
+
+func TestDLQServiceListsJobAudit(t *testing.T) {
+	auditWriter := &dlqAuditWriter{
+		records: []JobAuditRecord{{
+			ID:     "audit-1",
+			JobID:  "job-1",
+			Action: JobAuditActionDLQRequeue,
+			Actor:  "codex",
+			Reason: "manual retry",
+		}},
+	}
+	service := newTestDLQService(
+		t,
+		&dlqJobRepository{job: enginejob.Job{ID: "job-1", Status: enginejob.StatusDLQ}},
+		&dlqOutboxWriter{},
+		auditWriter,
+	)
+
+	records, err := service.ListJobAudit(context.Background(), "job-1", 10)
+
+	if err != nil {
+		t.Fatalf("list job audit: %v", err)
+	}
+	if auditWriter.listJobID != "job-1" {
+		t.Fatalf("expected audit lookup for job-1, got %q", auditWriter.listJobID)
+	}
+	if auditWriter.listLimit != 10 {
+		t.Fatalf("expected audit limit 10, got %d", auditWriter.listLimit)
+	}
+	if len(records) != 1 || records[0].ID != "audit-1" {
+		t.Fatalf("unexpected audit records: %#v", records)
 	}
 }
