@@ -56,6 +56,35 @@ func (r *JobRepository) CreateWithOutbox(ctx context.Context, job enginejob.Job,
 	return nil
 }
 
+func (r *JobRepository) CreateWithOutboxAndInbox(ctx context.Context, job enginejob.Job, record outbox.Record, source string, idempotencyKey string, responseJSON json.RawMessage) error {
+	if r == nil || r.pool == nil {
+		return fmt.Errorf("postgres job repository is not initialized")
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin job outbox inbox transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	if err := insertJob(ctx, tx, job); err != nil {
+		return err
+	}
+	if err := insertOutboxRecord(ctx, tx, record); err != nil {
+		return err
+	}
+	if err := insertInboxResponse(ctx, tx, source, idempotencyKey, responseJSON, job.CreatedAt, false); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit job outbox inbox transaction: %w", err)
+	}
+
+	return nil
+}
+
 func insertJob(ctx context.Context, executor sqlExecutor, job enginejob.Job) error {
 	_, err := executor.Exec(ctx, `
 		INSERT INTO integration_jobs (

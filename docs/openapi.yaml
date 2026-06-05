@@ -190,7 +190,10 @@ components:
       required: false
       schema:
         type: string
-      description: Stored on the created job. Current reuse behavior is driven by dedupe key.
+      description: >
+        Persisted in `integration_inbox` per source. A repeated key returns
+        the saved job response with `reused=true` and does not create another
+        job or outbox record.
     JobID:
       name: job_id
       in: path

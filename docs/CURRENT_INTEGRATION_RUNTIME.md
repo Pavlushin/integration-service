@@ -127,13 +127,19 @@
 
 1. запрос валидируется;
 2. по телу строится `dedupe_key`;
-3. выполняется поиск последней job с тем же `dedupe_key`;
-4. если reusable job нет:
-   - `prepare` job со статусом `received` и outbox record для topic `integration.prepare` создаются в одной DB transaction;
+3. если передан `X-Idempotency-Key`, выполняется поиск сохраненного response в `integration_inbox`;
+4. если response найден:
+   - возвращается сохраненный `job_id` / `correlation_id`;
+   - выставляется `reused=true`;
+   - новая job и новое сообщение в очередь не создаются;
+5. если response не найден, выполняется поиск последней job с тем же `dedupe_key`;
+6. если reusable job нет:
+   - `prepare` job со статусом `received`, outbox record для topic `integration.prepare` и inbox response создаются в одной DB transaction;
    - возвращается `202 Accepted`;
-5. если reusable job уже есть:
+7. если reusable job уже есть:
    - возвращается существующий `job_id`;
    - выставляется `reused=true`;
+   - новый `X-Idempotency-Key`, если он был передан, сохраняется в `integration_inbox`;
    - новое сообщение в очередь не создается.
 
 ### Этап Prepare
@@ -370,7 +376,6 @@ X-Idempotency-Key: optional
 
 Пока еще не закрыты следующие пункты:
 
-- `integration_inbox` пока нет;
 - финального outbound HTTP sender пока нет;
 - retry classification пока базовая;
 - naming route пока тестовый и должен быть переименован в предметный endpoint.
