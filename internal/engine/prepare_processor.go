@@ -76,10 +76,10 @@ func (p *PrepareProcessor) Process(ctx context.Context, jobID string) error {
 	)
 
 	if job.Kind != enginejob.KindPrepare {
-		return fmt.Errorf("unexpected job kind: %s", job.Kind)
+		return p.recordFailure(ctx, log, job, fmt.Errorf("unexpected job kind: %s", job.Kind))
 	}
 
-	if job.Status == enginejob.StatusPrepared || job.Status == enginejob.StatusDone {
+	if job.Status == enginejob.StatusPrepared || job.IsTerminal() {
 		return nil
 	}
 
@@ -90,7 +90,7 @@ func (p *PrepareProcessor) Process(ctx context.Context, jobID string) error {
 
 	var request worksheetsexport.Request
 	if err := json.Unmarshal(job.PayloadJSON, &request); err != nil {
-		return fmt.Errorf("decode prepare job payload: %w", err)
+		return p.recordFailure(ctx, log, job, fmt.Errorf("decode prepare job payload: %w", err))
 	}
 	log.Info(
 		"calling product api for worksheets export",
@@ -101,7 +101,7 @@ func (p *PrepareProcessor) Process(ctx context.Context, jobID string) error {
 	apiStartedAt := time.Now()
 	responseBody, err := p.client.ExportWorksheets(ctx, request)
 	if err != nil {
-		return fmt.Errorf("export worksheets: %w", err)
+		return p.recordFailure(ctx, log, job, fmt.Errorf("export worksheets: %w", err))
 	}
 	log.Info(
 		"product api response received",
@@ -111,16 +111,16 @@ func (p *PrepareProcessor) Process(ctx context.Context, jobID string) error {
 
 	tempPath, err := p.storage.Save(ctx, filepath.Join("tmp", job.ID+".json"), responseBody)
 	if err != nil {
-		return fmt.Errorf("save prepare temp file: %w", err)
+		return p.recordFailure(ctx, log, job, fmt.Errorf("save prepare temp file: %w", err))
 	}
 	log.Info("prepare temp file saved", zap.String("result_path", tempPath))
 
 	if err := p.jobs.UpdateResult(ctx, job.ID, tempPath); err != nil {
-		return fmt.Errorf("update prepare result path: %w", err)
+		return p.recordFailure(ctx, log, job, fmt.Errorf("update prepare result path: %w", err))
 	}
 
 	if err := p.jobs.UpdateStatus(ctx, job.ID, enginejob.StatusPrepared, ""); err != nil {
-		return fmt.Errorf("mark job prepared: %w", err)
+		return p.recordFailure(ctx, log, job, fmt.Errorf("mark job prepared: %w", err))
 	}
 	log.Info("prepare job marked prepared", zap.String("result_path", tempPath))
 
@@ -148,7 +148,7 @@ func (p *PrepareProcessor) Process(ctx context.Context, jobID string) error {
 	}
 
 	if err := p.jobs.Create(ctx, deliveryJob); err != nil {
-		return fmt.Errorf("create delivery job: %w", err)
+		return p.recordFailure(ctx, log, job, fmt.Errorf("create delivery job: %w", err))
 	}
 	log.Info(
 		"delivery job created",
@@ -170,7 +170,7 @@ func (p *PrepareProcessor) Process(ctx context.Context, jobID string) error {
 		CreatedAt:   time.Now().UTC(),
 	}
 	if err := p.outbox.Enqueue(ctx, record); err != nil {
-		return fmt.Errorf("enqueue delivery outbox record: %w", err)
+		return p.recordFailure(ctx, log, job, fmt.Errorf("enqueue delivery outbox record: %w", err))
 	}
 	log.Info(
 		"delivery outbox record enqueued",
@@ -178,5 +178,13 @@ func (p *PrepareProcessor) Process(ctx context.Context, jobID string) error {
 		zap.String("topic", record.Topic),
 	)
 
+	return nil
+}
+
+func (p *PrepareProcessor) recordFailure(ctx context.Context, log *logger.Logger, job enginejob.Job, err error) error {
+	log.Error("prepare job processing failed", zap.Error(err))
+	if recordErr := recordProcessingFailure(ctx, p.jobs, p.outbox, p.ids, PrepareTopic, job, err); recordErr != nil {
+		return recordErr
+	}
 	return nil
 }

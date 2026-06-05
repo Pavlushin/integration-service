@@ -17,19 +17,32 @@ import (
 
 type DeliveryProcessor struct {
 	jobs    JobRepository
+	outbox  OutboxWriter
+	ids     IDGenerator
 	storage storage.Storage
 }
 
-func NewDeliveryProcessor(jobs JobRepository, storageProvider storage.Storage) (*DeliveryProcessor, error) {
+func NewDeliveryProcessor(
+	jobs JobRepository,
+	outboxWriter OutboxWriter,
+	ids IDGenerator,
+	storageProvider storage.Storage,
+) (*DeliveryProcessor, error) {
 	switch {
 	case jobs == nil:
 		return nil, fmt.Errorf("job repository is required")
+	case outboxWriter == nil:
+		return nil, fmt.Errorf("outbox writer is required")
+	case ids == nil:
+		return nil, fmt.Errorf("id generator is required")
 	case storageProvider == nil:
 		return nil, fmt.Errorf("storage is required")
 	}
 
 	return &DeliveryProcessor{
 		jobs:    jobs,
+		outbox:  outboxWriter,
+		ids:     ids,
 		storage: storageProvider,
 	}, nil
 }
@@ -56,10 +69,10 @@ func (p *DeliveryProcessor) Process(ctx context.Context, jobID string) error {
 	)
 
 	if job.Kind != enginejob.KindDelivery {
-		return fmt.Errorf("unexpected job kind: %s", job.Kind)
+		return p.recordFailure(ctx, log, job, fmt.Errorf("unexpected job kind: %s", job.Kind))
 	}
 
-	if job.Status == enginejob.StatusDone {
+	if job.IsTerminal() {
 		return nil
 	}
 
@@ -70,7 +83,7 @@ func (p *DeliveryProcessor) Process(ctx context.Context, jobID string) error {
 
 	var payload worksheetsexport.DeliveryPayload
 	if err := json.Unmarshal(job.PayloadJSON, &payload); err != nil {
-		return fmt.Errorf("decode delivery job payload: %w", err)
+		return p.recordFailure(ctx, log, job, fmt.Errorf("decode delivery job payload: %w", err))
 	}
 	log.Info(
 		"delivery payload decoded",
@@ -80,22 +93,22 @@ func (p *DeliveryProcessor) Process(ctx context.Context, jobID string) error {
 
 	data, err := p.storage.Read(ctx, payload.TempPath)
 	if err != nil {
-		return fmt.Errorf("read prepare temp file: %w", err)
+		return p.recordFailure(ctx, log, job, fmt.Errorf("read prepare temp file: %w", err))
 	}
 	log.Info("prepare temp file loaded", zap.Int("bytes", len(data)))
 
 	finalPath, err := p.storage.Save(ctx, filepath.Join(job.ID+".json"), data)
 	if err != nil {
-		return fmt.Errorf("save delivery final file: %w", err)
+		return p.recordFailure(ctx, log, job, fmt.Errorf("save delivery final file: %w", err))
 	}
 	log.Info("delivery final file saved", zap.String("result_path", finalPath))
 
 	if err := p.jobs.UpdateResult(ctx, job.ID, finalPath); err != nil {
-		return fmt.Errorf("update delivery result path: %w", err)
+		return p.recordFailure(ctx, log, job, fmt.Errorf("update delivery result path: %w", err))
 	}
 
 	if err := p.storage.Delete(ctx, payload.TempPath); err != nil {
-		return fmt.Errorf("delete prepare temp file: %w", err)
+		return p.recordFailure(ctx, log, job, fmt.Errorf("delete prepare temp file: %w", err))
 	}
 	log.Info("prepare temp file deleted", zap.String("temp_path", payload.TempPath))
 
@@ -111,5 +124,13 @@ func (p *DeliveryProcessor) Process(ctx context.Context, jobID string) error {
 		log.Info("prepare job marked done after delivery", zap.String("prepare_job_id", payload.PrepareJobID))
 	}
 
+	return nil
+}
+
+func (p *DeliveryProcessor) recordFailure(ctx context.Context, log *logger.Logger, job enginejob.Job, err error) error {
+	log.Error("delivery job processing failed", zap.Error(err))
+	if recordErr := recordProcessingFailure(ctx, p.jobs, p.outbox, p.ids, DeliveryTopic, job, err); recordErr != nil {
+		return recordErr
+	}
 	return nil
 }
