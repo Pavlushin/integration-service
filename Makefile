@@ -64,7 +64,7 @@ db-jobs-full:
 	$(COMPOSE) exec -T postgres sh -lc 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -c "SELECT id, correlation_id, parent_id, type, kind, direction, status, dedupe_key, created_at, started_at, finished_at FROM integration_jobs ORDER BY created_at DESC LIMIT 50;"'
 
 db-outbox:
-	$(COMPOSE) exec -T postgres sh -lc 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -c "SELECT id, topic, payload_json, created_at, published_at, last_error FROM integration_outbox ORDER BY created_at DESC LIMIT 20;"'
+	$(COMPOSE) exec -T postgres sh -lc 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -c "SELECT id, topic, payload_json, created_at, available_at, published_at, last_error FROM integration_outbox ORDER BY created_at DESC LIMIT 20;"'
 
 log-tail:
 	@tail -n 100 $$(ls -1t out/logs/*.log | head -n 2)
@@ -82,7 +82,7 @@ trace:
 	@printf '\n== JOBS ==\n'
 	@$(COMPOSE) exec -T postgres sh -lc 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -c "SELECT id, correlation_id, parent_id, type, kind, direction, status, dedupe_key, result_path, attempts, created_at, started_at, finished_at FROM integration_jobs WHERE correlation_id = '\''$(CORR)'\'' ORDER BY created_at ASC;"'
 	@printf '\n== OUTBOX ==\n'
-	@$(COMPOSE) exec -T postgres sh -lc 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -c "SELECT o.id, o.topic, o.payload_json, o.created_at, o.published_at, o.last_error FROM integration_outbox o WHERE EXISTS (SELECT 1 FROM integration_jobs j WHERE j.correlation_id = '\''$(CORR)'\'' AND o.payload_json ->> '\''job_id'\'' = j.id) ORDER BY o.created_at ASC;"'
+	@$(COMPOSE) exec -T postgres sh -lc 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -c "SELECT o.id, o.topic, o.payload_json, o.created_at, o.available_at, o.published_at, o.last_error FROM integration_outbox o WHERE EXISTS (SELECT 1 FROM integration_jobs j WHERE j.correlation_id = '\''$(CORR)'\'' AND o.payload_json ->> '\''job_id'\'' = j.id) ORDER BY o.created_at ASC;"'
 	@printf '\n== LOGS ==\n'
 	@grep -h "$(CORR)" out/logs/*.log || true
 

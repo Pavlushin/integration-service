@@ -64,6 +64,11 @@ func main() {
 		log.Error("failed to initialize engine service", zap.Error(err))
 		os.Exit(1)
 	}
+	dlqService, err := engine.NewDLQService(jobRepository, outboxRepository, idgen.NewUUIDGenerator())
+	if err != nil {
+		log.Error("failed to initialize dlq service", zap.Error(err))
+		os.Exit(1)
+	}
 
 	router := chi.NewRouter()
 	gw := gateway.NewRouter(router, engineService)
@@ -86,6 +91,7 @@ func main() {
 	})
 
 	integrationhandlers.RegisterRoutes(gw)
+	integrationhandlers.RegisterDLQRoutes(router, dlqService)
 
 	server := httpserver.NewHTTPServer(
 		httpserver.NewConfigMust(),

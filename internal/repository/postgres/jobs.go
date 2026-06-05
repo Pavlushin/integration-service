@@ -111,6 +111,44 @@ func (r *JobRepository) FindActiveByDedupeKey(ctx context.Context, dedupeKey str
 	return job, true, nil
 }
 
+func (r *JobRepository) ListByStatus(ctx context.Context, status enginejob.Status, limit int) ([]enginejob.Job, error) {
+	if r == nil || r.pool == nil {
+		return nil, fmt.Errorf("postgres job repository is not initialized")
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+
+	rows, err := r.pool.Query(ctx, `
+		SELECT
+			id, correlation_id, COALESCE(parent_id, ''), type, kind, direction, status,
+			dedupe_key, COALESCE(idempotency_key, ''), payload_json, COALESCE(result_path, ''),
+			attempts, COALESCE(last_error, ''), created_at, started_at, finished_at
+		FROM integration_jobs
+		WHERE status = $1
+		ORDER BY created_at DESC
+		LIMIT $2
+	`, string(status), limit)
+	if err != nil {
+		return nil, fmt.Errorf("select integration jobs by status: %w", err)
+	}
+	defer rows.Close()
+
+	var jobs []enginejob.Job
+	for rows.Next() {
+		job, err := scanJob(rows.Scan)
+		if err != nil {
+			return nil, fmt.Errorf("scan integration job by status: %w", err)
+		}
+		jobs = append(jobs, job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate integration jobs by status: %w", err)
+	}
+
+	return jobs, nil
+}
+
 func (r *JobRepository) UpdateStatus(ctx context.Context, jobID string, status enginejob.Status, lastError string) error {
 	if r == nil || r.pool == nil {
 		return fmt.Errorf("postgres job repository is not initialized")
@@ -157,6 +195,27 @@ func (r *JobRepository) IncrementAttempts(ctx context.Context, jobID string, las
 	`, jobID, lastError)
 	if err != nil {
 		return fmt.Errorf("increment integration job attempts: %w", err)
+	}
+
+	return nil
+}
+
+func (r *JobRepository) ResetForRetry(ctx context.Context, jobID string) error {
+	if r == nil || r.pool == nil {
+		return fmt.Errorf("postgres job repository is not initialized")
+	}
+
+	_, err := r.pool.Exec(ctx, `
+		UPDATE integration_jobs
+		SET status = $2,
+		    attempts = 0,
+		    last_error = NULL,
+		    started_at = NULL,
+		    finished_at = NULL
+		WHERE id = $1
+	`, jobID, string(enginejob.StatusRetrying))
+	if err != nil {
+		return fmt.Errorf("reset integration job for retry: %w", err)
 	}
 
 	return nil

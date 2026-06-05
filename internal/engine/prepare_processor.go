@@ -23,6 +23,7 @@ type PrepareProcessor struct {
 	ids     IDGenerator
 	storage storage.Storage
 	client  *product.Client
+	retry   RetryPolicy
 }
 
 func NewPrepareProcessor(
@@ -31,6 +32,7 @@ func NewPrepareProcessor(
 	ids IDGenerator,
 	storageProvider storage.Storage,
 	client *product.Client,
+	retryPolicy RetryPolicy,
 ) (*PrepareProcessor, error) {
 	switch {
 	case jobs == nil:
@@ -51,6 +53,7 @@ func NewPrepareProcessor(
 		ids:     ids,
 		storage: storageProvider,
 		client:  client,
+		retry:   retryPolicy.WithDefaults(),
 	}, nil
 }
 
@@ -183,7 +186,7 @@ func (p *PrepareProcessor) Process(ctx context.Context, jobID string) error {
 
 func (p *PrepareProcessor) recordFailure(ctx context.Context, log *logger.Logger, job enginejob.Job, err error) error {
 	log.Error("prepare job processing failed", zap.Error(err))
-	if recordErr := recordProcessingFailure(ctx, p.jobs, p.outbox, p.ids, PrepareTopic, job, err); recordErr != nil {
+	if recordErr := recordProcessingFailure(ctx, p.retry, p.jobs, p.outbox, p.ids, PrepareTopic, job, err); recordErr != nil {
 		return recordErr
 	}
 	return nil
