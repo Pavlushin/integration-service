@@ -5,6 +5,7 @@ COMPOSE := env PROJECT_ROOT="$(PROJECT_ROOT)" docker compose --env-file .env -f 
 GO := env GOCACHE="$(PROJECT_ROOT)/.gocache" go
 
 .PHONY: dev-up dev-down dev-logs postgres-migrate api worker api-dev worker-dev stack stack-up \
+	e2e-up e2e-down e2e-logs fake-product-api \
 	pg-forward-up pg-forward-down rabbit-forward-up rabbit-forward-down rabbit-ui-forward-up rabbit-ui-forward-down rabbit-ui-forward-restart \
 	db-shell db-jobs db-jobs-full db-outbox db-audit log-tail logs-corr logs-job trace build fmt
 
@@ -31,6 +32,19 @@ stack:
 
 stack-up:
 	$(COMPOSE) up -d --build api worker
+
+fake-product-api:
+	$(COMPOSE) --profile e2e up --build fake-product-api
+
+e2e-up:
+	-$(COMPOSE) stop worker
+	$(COMPOSE) --profile e2e up -d --build api worker-e2e fake-product-api
+
+e2e-down:
+	$(COMPOSE) --profile e2e rm -sf worker-e2e fake-product-api
+
+e2e-logs:
+	$(COMPOSE) --profile e2e logs -f api worker-e2e fake-product-api
 
 pg-forward-up:
 	$(COMPOSE) --profile forwarders up -d postgres postgres-port-forwarder

@@ -33,7 +33,7 @@ type DeliveryJobInput struct {
 type JobRepository interface {
 	Create(ctx context.Context, job enginejob.Job) error
 	GetByID(ctx context.Context, id string) (enginejob.Job, error)
-	FindActiveByDedupeKey(ctx context.Context, dedupeKey string) (enginejob.Job, bool, error)
+	FindLatestByDedupeKey(ctx context.Context, dedupeKey string) (enginejob.Job, bool, error)
 	UpdateStatus(ctx context.Context, jobID string, status enginejob.Status, lastError string) error
 	UpdateResult(ctx context.Context, jobID string, resultPath string) error
 	IncrementAttempts(ctx context.Context, jobID string, lastError string) error

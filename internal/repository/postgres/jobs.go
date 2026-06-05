@@ -83,7 +83,7 @@ func (r *JobRepository) GetByID(ctx context.Context, id string) (enginejob.Job, 
 	return job, nil
 }
 
-func (r *JobRepository) FindActiveByDedupeKey(ctx context.Context, dedupeKey string) (enginejob.Job, bool, error) {
+func (r *JobRepository) FindLatestByDedupeKey(ctx context.Context, dedupeKey string) (enginejob.Job, bool, error) {
 	if r == nil || r.pool == nil {
 		return enginejob.Job{}, false, fmt.Errorf("postgres job repository is not initialized")
 	}
@@ -95,7 +95,6 @@ func (r *JobRepository) FindActiveByDedupeKey(ctx context.Context, dedupeKey str
 			attempts, COALESCE(last_error, ''), created_at, started_at, finished_at
 		FROM integration_jobs
 		WHERE dedupe_key = $1
-		  AND status IN ('received', 'validated', 'prepared', 'delivering', 'retrying')
 		ORDER BY created_at DESC
 		LIMIT 1
 	`, dedupeKey)
@@ -105,7 +104,7 @@ func (r *JobRepository) FindActiveByDedupeKey(ctx context.Context, dedupeKey str
 		if errors.Is(err, pgx.ErrNoRows) {
 			return enginejob.Job{}, false, nil
 		}
-		return enginejob.Job{}, false, fmt.Errorf("select active integration job by dedupe key: %w", err)
+		return enginejob.Job{}, false, fmt.Errorf("select latest integration job by dedupe key: %w", err)
 	}
 
 	return job, true, nil
