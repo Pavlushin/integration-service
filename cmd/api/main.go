@@ -51,6 +51,8 @@ func main() {
 
 	jobRepository := postgresrepository.NewJobRepository(postgresPool)
 	outboxRepository := postgresrepository.NewOutboxRepository(postgresPool)
+	auditRepository := postgresrepository.NewJobAuditRepository(postgresPool)
+	observabilityRepository := postgresrepository.NewObservabilityRepository(postgresPool)
 	workflowRegistry := workflow.MustNewRegistry()
 	engineService, err := engine.NewService(
 		jobRepository,
@@ -64,9 +66,14 @@ func main() {
 		log.Error("failed to initialize engine service", zap.Error(err))
 		os.Exit(1)
 	}
-	dlqService, err := engine.NewDLQService(jobRepository, outboxRepository, idgen.NewUUIDGenerator())
+	dlqService, err := engine.NewDLQService(jobRepository, outboxRepository, auditRepository, idgen.NewUUIDGenerator())
 	if err != nil {
 		log.Error("failed to initialize dlq service", zap.Error(err))
+		os.Exit(1)
+	}
+	observabilityService, err := engine.NewObservabilityService(observabilityRepository)
+	if err != nil {
+		log.Error("failed to initialize observability service", zap.Error(err))
 		os.Exit(1)
 	}
 
@@ -92,6 +99,7 @@ func main() {
 
 	integrationhandlers.RegisterRoutes(gw)
 	integrationhandlers.RegisterDLQRoutes(router, dlqService)
+	integrationhandlers.RegisterObservabilityRoutes(router, observabilityService)
 
 	server := httpserver.NewHTTPServer(
 		httpserver.NewConfigMust(),

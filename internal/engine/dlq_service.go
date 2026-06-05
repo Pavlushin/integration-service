@@ -21,18 +21,26 @@ type DLQJobRepository interface {
 	ResetForRetry(ctx context.Context, jobID string) error
 }
 
+type JobAuditWriter interface {
+	RecordJobAudit(ctx context.Context, record JobAuditRecord) error
+	ListJobAudit(ctx context.Context, jobID string, limit int) ([]JobAuditRecord, error)
+}
+
 type DLQService struct {
 	jobs   DLQJobRepository
 	outbox OutboxWriter
+	audit  JobAuditWriter
 	ids    IDGenerator
 }
 
-func NewDLQService(jobs DLQJobRepository, outboxWriter OutboxWriter, ids IDGenerator) (*DLQService, error) {
+func NewDLQService(jobs DLQJobRepository, outboxWriter OutboxWriter, auditWriter JobAuditWriter, ids IDGenerator) (*DLQService, error) {
 	switch {
 	case jobs == nil:
 		return nil, fmt.Errorf("dlq job repository is required")
 	case outboxWriter == nil:
 		return nil, fmt.Errorf("outbox writer is required")
+	case auditWriter == nil:
+		return nil, fmt.Errorf("job audit writer is required")
 	case ids == nil:
 		return nil, fmt.Errorf("id generator is required")
 	}
@@ -40,6 +48,7 @@ func NewDLQService(jobs DLQJobRepository, outboxWriter OutboxWriter, ids IDGener
 	return &DLQService{
 		jobs:   jobs,
 		outbox: outboxWriter,
+		audit:  auditWriter,
 		ids:    ids,
 	}, nil
 }
@@ -63,15 +72,18 @@ func (s *DLQService) ListDLQJobs(ctx context.Context, limit int) ([]enginejob.Jo
 	return jobs, nil
 }
 
-func (s *DLQService) RequeueDLQJob(ctx context.Context, jobID string) (enginejob.Job, error) {
+func (s *DLQService) RequeueDLQJob(ctx context.Context, input RequeueDLQInput) (enginejob.Job, error) {
 	if s == nil {
 		return enginejob.Job{}, fmt.Errorf("dlq service is nil")
 	}
-	if jobID == "" {
+	if input.JobID == "" {
 		return enginejob.Job{}, fmt.Errorf("job id is required")
 	}
+	if input.Actor == "" {
+		input.Actor = "unknown"
+	}
 
-	job, err := s.jobs.GetByID(ctx, jobID)
+	job, err := s.jobs.GetByID(ctx, input.JobID)
 	if err != nil {
 		return enginejob.Job{}, fmt.Errorf("load dlq job: %w", err)
 	}
@@ -105,10 +117,54 @@ func (s *DLQService) RequeueDLQJob(ctx context.Context, jobID string) (enginejob
 		return enginejob.Job{}, fmt.Errorf("enqueue dlq requeue outbox record: %w", err)
 	}
 
+	metadata, err := json.Marshal(map[string]any{
+		"status_before":   string(enginejob.StatusDLQ),
+		"status_after":    string(enginejob.StatusRetrying),
+		"attempts_before": job.Attempts,
+		"kind":            string(job.Kind),
+		"topic":           topic,
+	})
+	if err != nil {
+		return enginejob.Job{}, fmt.Errorf("marshal dlq requeue audit metadata: %w", err)
+	}
+
+	if err := s.audit.RecordJobAudit(ctx, JobAuditRecord{
+		ID:           s.ids.NewID(),
+		JobID:        job.ID,
+		Action:       JobAuditActionDLQRequeue,
+		Actor:        input.Actor,
+		Reason:       input.Reason,
+		MetadataJSON: metadata,
+		CreatedAt:    now,
+	}); err != nil {
+		return enginejob.Job{}, fmt.Errorf("record dlq requeue audit: %w", err)
+	}
+
 	job.Status = enginejob.StatusRetrying
 	job.Attempts = 0
 	job.LastError = ""
 	return job, nil
+}
+
+func (s *DLQService) ListJobAudit(ctx context.Context, jobID string, limit int) ([]JobAuditRecord, error) {
+	if s == nil {
+		return nil, fmt.Errorf("dlq service is nil")
+	}
+	if jobID == "" {
+		return nil, fmt.Errorf("job id is required")
+	}
+	if limit <= 0 {
+		limit = defaultDLQLimit
+	}
+	if limit > maxDLQLimit {
+		limit = maxDLQLimit
+	}
+
+	records, err := s.audit.ListJobAudit(ctx, jobID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list job audit: %w", err)
+	}
+	return records, nil
 }
 
 func topicForJobKind(kind enginejob.Kind) (string, error) {
