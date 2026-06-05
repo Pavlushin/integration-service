@@ -30,6 +30,11 @@ func (r *retryJobRepository) CreateWithOutbox(_ context.Context, job enginejob.J
 	return nil
 }
 
+func (r *retryJobRepository) CreateWithOutboxAndInbox(_ context.Context, job enginejob.Job, _ outbox.Record, _ string, _ string, _ json.RawMessage) error {
+	r.createdJob = job
+	return nil
+}
+
 func (r *retryJobRepository) GetByID(_ context.Context, _ string) (enginejob.Job, error) {
 	return enginejob.Job{}, errors.New("not implemented")
 }

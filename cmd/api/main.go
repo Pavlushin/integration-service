@@ -50,13 +50,14 @@ func main() {
 	defer postgresPool.Close()
 
 	jobRepository := postgresrepository.NewJobRepository(postgresPool)
+	inboxRepository := postgresrepository.NewInboxRepository(postgresPool)
 	outboxRepository := postgresrepository.NewOutboxRepository(postgresPool)
 	auditRepository := postgresrepository.NewJobAuditRepository(postgresPool)
 	observabilityRepository := postgresrepository.NewObservabilityRepository(postgresPool)
 	workflowRegistry := workflow.MustNewRegistry()
 	engineService, err := engine.NewService(
 		jobRepository,
-		engine.NoopInboxRepository{},
+		inboxRepository,
 		storage.NoopStorage{},
 		workflowRegistry,
 		idgen.NewUUIDGenerator(),

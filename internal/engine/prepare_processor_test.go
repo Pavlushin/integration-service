@@ -51,6 +51,10 @@ func (r *prepareJobRepository) CreateWithOutbox(_ context.Context, job enginejob
 	return nil
 }
 
+func (r *prepareJobRepository) CreateWithOutboxAndInbox(_ context.Context, job enginejob.Job, record outbox.Record, _ string, _ string, _ json.RawMessage) error {
+	return r.CreateWithOutbox(context.Background(), job, record)
+}
+
 func (r *prepareJobRepository) UpdateStatus(_ context.Context, _ string, status enginejob.Status, _ string) error {
 	r.statusUpdates = append(r.statusUpdates, status)
 	return nil
