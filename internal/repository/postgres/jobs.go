@@ -8,6 +8,7 @@ import (
 	"time"
 
 	enginejob "onec-integration/internal/engine/job"
+	"onec-integration/internal/outbox"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -26,7 +27,37 @@ func (r *JobRepository) Create(ctx context.Context, job enginejob.Job) error {
 		return fmt.Errorf("postgres job repository is not initialized")
 	}
 
-	_, err := r.pool.Exec(ctx, `
+	return insertJob(ctx, r.pool, job)
+}
+
+func (r *JobRepository) CreateWithOutbox(ctx context.Context, job enginejob.Job, record outbox.Record) error {
+	if r == nil || r.pool == nil {
+		return fmt.Errorf("postgres job repository is not initialized")
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin job outbox transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	if err := insertJob(ctx, tx, job); err != nil {
+		return err
+	}
+	if err := insertOutboxRecord(ctx, tx, record); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit job outbox transaction: %w", err)
+	}
+
+	return nil
+}
+
+func insertJob(ctx context.Context, executor sqlExecutor, job enginejob.Job) error {
+	_, err := executor.Exec(ctx, `
 		INSERT INTO integration_jobs (
 			id, correlation_id, parent_id, type, kind, direction, status,
 			dedupe_key, idempotency_key, payload_json, result_path, attempts,

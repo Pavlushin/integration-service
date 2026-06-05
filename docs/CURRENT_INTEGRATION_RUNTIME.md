@@ -127,12 +127,11 @@
 
 1. запрос валидируется;
 2. по телу строится `dedupe_key`;
-3. выполняется поиск активной job;
-4. если активной job нет:
-   - создается `prepare` job со статусом `received`;
-   - создается outbox record для topic `integration.prepare`;
+3. выполняется поиск последней job с тем же `dedupe_key`;
+4. если reusable job нет:
+   - `prepare` job со статусом `received` и outbox record для topic `integration.prepare` создаются в одной DB transaction;
    - возвращается `202 Accepted`;
-5. если активная job уже есть:
+5. если reusable job уже есть:
    - возвращается существующий `job_id`;
    - выставляется `reused=true`;
    - новое сообщение в очередь не создается.
@@ -160,8 +159,7 @@ Processor:
 6. JSON сохраняется во временный файл;
 7. обновляется `prepare.result_path`;
 8. `prepare` job переводится в `prepared`;
-9. создается `delivery` job;
-10. создается outbox record для topic `integration.delivery`.
+9. `delivery` job и outbox record для topic `integration.delivery` создаются в одной DB transaction.
 
 Текущая тестовая реализация сбора данных:
 
@@ -243,12 +241,14 @@ delivery: prepared -> delivering -> done
 
 Текущее правило:
 
-- если уже существует активная job с тем же `dedupe_key`, новая цепочка не создается.
+- если уже существует активная job с тем же `dedupe_key`, новая цепочка не создается;
+- если последняя job с тем же `dedupe_key` успешно завершена (`done`), новая цепочка также не создается;
+- если последняя job завершилась неуспешно (`dlq`/`failed`), повторный запрос может создать новую цепочку.
 
 Поле ответа API:
 
 - `reused=false` означает, что была создана новая heavy job;
-- `reused=true` означает, что уже существовала активная job и была возвращена именно она.
+- `reused=true` означает, что уже существовала reusable job и была возвращена именно она.
 
 ## Логирование и трассировка
 
@@ -370,8 +370,7 @@ X-Idempotency-Key: optional
 
 Пока еще не закрыты следующие пункты:
 
-- `job + outbox` пока не пишутся в одной DB transaction;
 - `integration_inbox` пока нет;
 - финального outbound HTTP sender пока нет;
-- полноценной retry classification / DLQ behavior пока нет;
+- retry classification пока базовая;
 - naming route пока тестовый и должен быть переименован в предметный endpoint.
