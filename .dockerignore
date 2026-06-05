@@ -1,0 +1,6 @@
+.git
+.idea
+.gocache
+out
+tmp
+*.log
