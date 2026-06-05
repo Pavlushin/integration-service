@@ -25,6 +25,11 @@ func (r *retryJobRepository) Create(_ context.Context, job enginejob.Job) error 
 	return nil
 }
 
+func (r *retryJobRepository) CreateWithOutbox(_ context.Context, job enginejob.Job, _ outbox.Record) error {
+	r.createdJob = job
+	return nil
+}
+
 func (r *retryJobRepository) GetByID(_ context.Context, _ string) (enginejob.Job, error) {
 	return enginejob.Job{}, errors.New("not implemented")
 }

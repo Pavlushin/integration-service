@@ -18,7 +18,6 @@ import (
 type Service struct {
 	jobs      JobRepository
 	inbox     InboxRepository
-	outbox    OutboxWriter
 	storage   storage.Storage
 	workflows *workflow.Registry
 	ids       IDGenerator
@@ -27,7 +26,6 @@ type Service struct {
 func NewService(
 	jobs JobRepository,
 	inbox InboxRepository,
-	outbox OutboxWriter,
 	storageProvider storage.Storage,
 	workflows *workflow.Registry,
 	ids IDGenerator,
@@ -37,8 +35,6 @@ func NewService(
 		return nil, fmt.Errorf("job repository is required")
 	case inbox == nil:
 		return nil, fmt.Errorf("inbox repository is required")
-	case outbox == nil:
-		return nil, fmt.Errorf("outbox writer is required")
 	case storageProvider == nil:
 		return nil, fmt.Errorf("storage is required")
 	case workflows == nil:
@@ -50,7 +46,6 @@ func NewService(
 	return &Service{
 		jobs:      jobs,
 		inbox:     inbox,
-		outbox:    outbox,
 		storage:   storageProvider,
 		workflows: workflows,
 		ids:       ids,
@@ -118,15 +113,6 @@ func (s *Service) StartHeavy(ctx context.Context, input StartHeavyInput) (StartH
 		CreatedAt:      now,
 	}
 
-	if err := s.jobs.Create(ctx, newJob); err != nil {
-		return StartHeavyResult{}, fmt.Errorf("create job: %w", err)
-	}
-	log.Info(
-		"prepare job created",
-		zap.String("job_id", newJob.ID),
-		zap.String("status", string(newJob.Status)),
-	)
-
 	messagePayload, err := json.Marshal(map[string]string{
 		"job_id": newJob.ID,
 	})
@@ -140,12 +126,13 @@ func (s *Service) StartHeavy(ctx context.Context, input StartHeavyInput) (StartH
 		PayloadJSON: messagePayload,
 		CreatedAt:   now,
 	}
-	if err := s.outbox.Enqueue(ctx, outboxRecord); err != nil {
-		return StartHeavyResult{}, fmt.Errorf("enqueue outbox record: %w", err)
+	if err := s.jobs.CreateWithOutbox(ctx, newJob, outboxRecord); err != nil {
+		return StartHeavyResult{}, fmt.Errorf("create prepare job and outbox record: %w", err)
 	}
 	log.Info(
-		"outbox record enqueued",
+		"prepare job and outbox record created",
 		zap.String("job_id", newJob.ID),
+		zap.String("status", string(newJob.Status)),
 		zap.String("topic", outboxRecord.Topic),
 		zap.String("outbox_id", outboxRecord.ID),
 	)

@@ -150,15 +150,6 @@ func (p *PrepareProcessor) Process(ctx context.Context, jobID string) error {
 		CreatedAt:      time.Now().UTC(),
 	}
 
-	if err := p.jobs.Create(ctx, deliveryJob); err != nil {
-		return p.recordFailure(ctx, log, job, fmt.Errorf("create delivery job: %w", err))
-	}
-	log.Info(
-		"delivery job created",
-		zap.String("delivery_job_id", deliveryJob.ID),
-		zap.String("delivery_status", string(deliveryJob.Status)),
-	)
-
 	messagePayload, err := json.Marshal(map[string]string{
 		"job_id": deliveryJob.ID,
 	})
@@ -172,11 +163,13 @@ func (p *PrepareProcessor) Process(ctx context.Context, jobID string) error {
 		PayloadJSON: messagePayload,
 		CreatedAt:   time.Now().UTC(),
 	}
-	if err := p.outbox.Enqueue(ctx, record); err != nil {
-		return p.recordFailure(ctx, log, job, fmt.Errorf("enqueue delivery outbox record: %w", err))
+	if err := p.jobs.CreateWithOutbox(ctx, deliveryJob, record); err != nil {
+		return p.recordFailure(ctx, log, job, fmt.Errorf("create delivery job and outbox record: %w", err))
 	}
 	log.Info(
-		"delivery outbox record enqueued",
+		"delivery job and outbox record created",
+		zap.String("delivery_job_id", deliveryJob.ID),
+		zap.String("delivery_status", string(deliveryJob.Status)),
 		zap.String("outbox_id", record.ID),
 		zap.String("topic", record.Topic),
 	)

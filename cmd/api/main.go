@@ -57,7 +57,6 @@ func main() {
 	engineService, err := engine.NewService(
 		jobRepository,
 		engine.NoopInboxRepository{},
-		outboxRepository,
 		storage.NoopStorage{},
 		workflowRegistry,
 		idgen.NewUUIDGenerator(),

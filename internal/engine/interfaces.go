@@ -32,6 +32,7 @@ type DeliveryJobInput struct {
 
 type JobRepository interface {
 	Create(ctx context.Context, job enginejob.Job) error
+	CreateWithOutbox(ctx context.Context, job enginejob.Job, record outbox.Record) error
 	GetByID(ctx context.Context, id string) (enginejob.Job, error)
 	FindLatestByDedupeKey(ctx context.Context, dedupeKey string) (enginejob.Job, bool, error)
 	UpdateStatus(ctx context.Context, jobID string, status enginejob.Status, lastError string) error

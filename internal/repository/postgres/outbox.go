@@ -23,6 +23,11 @@ func (r *OutboxRepository) Enqueue(ctx context.Context, record outbox.Record) er
 	if r == nil || r.pool == nil {
 		return fmt.Errorf("postgres outbox repository is not initialized")
 	}
+
+	return insertOutboxRecord(ctx, r.pool, record)
+}
+
+func insertOutboxRecord(ctx context.Context, executor sqlExecutor, record outbox.Record) error {
 	if record.CreatedAt.IsZero() {
 		record.CreatedAt = time.Now().UTC()
 	}
@@ -30,7 +35,7 @@ func (r *OutboxRepository) Enqueue(ctx context.Context, record outbox.Record) er
 		record.AvailableAt = record.CreatedAt
 	}
 
-	_, err := r.pool.Exec(ctx, `
+	_, err := executor.Exec(ctx, `
 		INSERT INTO integration_outbox (
 			id, topic, payload_json, created_at, available_at, published_at, last_error
 		) VALUES (
