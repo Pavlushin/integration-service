@@ -78,18 +78,24 @@ func (s *Service) StartHeavy(ctx context.Context, input StartHeavyInput) (StartH
 		return StartHeavyResult{}, fmt.Errorf("dedupe key is required")
 	}
 
-	if activeJob, found, err := s.jobs.FindActiveByDedupeKey(ctx, input.DedupeKey); err != nil {
-		return StartHeavyResult{}, fmt.Errorf("find active job by dedupe key: %w", err)
-	} else if found {
+	if previousJob, found, err := s.jobs.FindLatestByDedupeKey(ctx, input.DedupeKey); err != nil {
+		return StartHeavyResult{}, fmt.Errorf("find latest job by dedupe key: %w", err)
+	} else if found && isReusableDedupeJob(previousJob) {
 		log.Info(
-			"active job reused by dedupe key",
-			zap.String("job_id", activeJob.ID),
-			zap.String("status", string(activeJob.Status)),
+			"job reused by dedupe key",
+			zap.String("job_id", previousJob.ID),
+			zap.String("status", string(previousJob.Status)),
 		)
 		return StartHeavyResult{
-			Job:    activeJob,
+			Job:    previousJob,
 			Reused: true,
 		}, nil
+	} else if found {
+		log.Info(
+			"terminal unsuccessful job is not reused by dedupe key",
+			zap.String("job_id", previousJob.ID),
+			zap.String("status", string(previousJob.Status)),
+		)
 	}
 
 	correlationID := input.CorrelationID
@@ -148,4 +154,8 @@ func (s *Service) StartHeavy(ctx context.Context, input StartHeavyInput) (StartH
 		Job:    newJob,
 		Reused: false,
 	}, nil
+}
+
+func isReusableDedupeJob(job enginejob.Job) bool {
+	return job.IsActive() || job.Status == enginejob.StatusDone
 }

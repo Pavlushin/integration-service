@@ -29,7 +29,7 @@ func (r *retryJobRepository) GetByID(_ context.Context, _ string) (enginejob.Job
 	return enginejob.Job{}, errors.New("not implemented")
 }
 
-func (r *retryJobRepository) FindActiveByDedupeKey(_ context.Context, _ string) (enginejob.Job, bool, error) {
+func (r *retryJobRepository) FindLatestByDedupeKey(_ context.Context, _ string) (enginejob.Job, bool, error) {
 	return enginejob.Job{}, false, errors.New("not implemented")
 }
 

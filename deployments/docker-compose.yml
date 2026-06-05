@@ -47,6 +47,45 @@ services:
       - ${PROJECT_ROOT}/out:/app/out
     restart: unless-stopped
 
+  worker-e2e:
+    build:
+      context: ${PROJECT_ROOT}
+      dockerfile: Dockerfile
+      args:
+        SERVICE: worker
+    profiles: ["e2e"]
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      fake-product-api:
+        condition: service_started
+    env_file:
+      - ${PROJECT_ROOT}/.env
+    environment:
+      RABBIT_MQ_HOST: rabbitmq
+      RABBIT_MQ_PORT: 5672
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      PRODUCT_API_BASE_URL: http://fake-product-api:8081
+      PRODUCT_API_BEARER_TOKEN: local-fake-token
+      PRODUCT_API_TIMEOUT: 10s
+    volumes:
+      - ${PROJECT_ROOT}/out:/app/out
+    restart: unless-stopped
+
+  fake-product-api:
+    build:
+      context: ${PROJECT_ROOT}
+      dockerfile: Dockerfile
+      args:
+        SERVICE: fake-product-api
+    profiles: ["e2e"]
+    ports:
+      - "127.0.0.1:${FAKE_PRODUCT_API_PORT:-18081}:8081"
+    restart: unless-stopped
+
   postgres:
     image: postgres:18.1-bookworm
     environment:
