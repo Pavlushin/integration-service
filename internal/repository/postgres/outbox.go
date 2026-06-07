@@ -24,17 +24,29 @@ func (r *OutboxRepository) Enqueue(ctx context.Context, record outbox.Record) er
 		return fmt.Errorf("postgres outbox repository is not initialized")
 	}
 
-	_, err := r.pool.Exec(ctx, `
+	return insertOutboxRecord(ctx, r.pool, record)
+}
+
+func insertOutboxRecord(ctx context.Context, executor sqlExecutor, record outbox.Record) error {
+	if record.CreatedAt.IsZero() {
+		record.CreatedAt = time.Now().UTC()
+	}
+	if record.AvailableAt.IsZero() {
+		record.AvailableAt = record.CreatedAt
+	}
+
+	_, err := executor.Exec(ctx, `
 		INSERT INTO integration_outbox (
-			id, topic, payload_json, created_at, published_at, last_error
+			id, topic, payload_json, created_at, available_at, published_at, last_error
 		) VALUES (
-			$1, $2, $3, $4, $5, NULLIF($6, '')
+			$1, $2, $3, $4, $5, $6, NULLIF($7, '')
 		)
 	`,
 		record.ID,
 		record.Topic,
 		record.PayloadJSON,
 		record.CreatedAt,
+		record.AvailableAt,
 		record.PublishedAt,
 		record.LastError,
 	)
@@ -54,10 +66,11 @@ func (r *OutboxRepository) ListPending(ctx context.Context, limit int) ([]outbox
 	}
 
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, topic, payload_json, created_at, published_at, COALESCE(last_error, '')
+		SELECT id, topic, payload_json, created_at, available_at, published_at, COALESCE(last_error, '')
 		FROM integration_outbox
 		WHERE published_at IS NULL
-		ORDER BY created_at ASC
+		  AND available_at <= NOW()
+		ORDER BY available_at ASC, created_at ASC
 		LIMIT $1
 	`, limit)
 	if err != nil {
@@ -75,6 +88,7 @@ func (r *OutboxRepository) ListPending(ctx context.Context, limit int) ([]outbox
 			&record.Topic,
 			&payload,
 			&record.CreatedAt,
+			&record.AvailableAt,
 			&record.PublishedAt,
 			&record.LastError,
 		); err != nil {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	enginejob "onec-integration/internal/engine/job"
+	"onec-integration/internal/outbox"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -26,7 +27,66 @@ func (r *JobRepository) Create(ctx context.Context, job enginejob.Job) error {
 		return fmt.Errorf("postgres job repository is not initialized")
 	}
 
-	_, err := r.pool.Exec(ctx, `
+	return insertJob(ctx, r.pool, job)
+}
+
+func (r *JobRepository) CreateWithOutbox(ctx context.Context, job enginejob.Job, record outbox.Record) error {
+	if r == nil || r.pool == nil {
+		return fmt.Errorf("postgres job repository is not initialized")
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin job outbox transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	if err := insertJob(ctx, tx, job); err != nil {
+		return err
+	}
+	if err := insertOutboxRecord(ctx, tx, record); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit job outbox transaction: %w", err)
+	}
+
+	return nil
+}
+
+func (r *JobRepository) CreateWithOutboxAndInbox(ctx context.Context, job enginejob.Job, record outbox.Record, source string, idempotencyKey string, responseJSON json.RawMessage) error {
+	if r == nil || r.pool == nil {
+		return fmt.Errorf("postgres job repository is not initialized")
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin job outbox inbox transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	if err := insertJob(ctx, tx, job); err != nil {
+		return err
+	}
+	if err := insertOutboxRecord(ctx, tx, record); err != nil {
+		return err
+	}
+	if err := insertInboxResponse(ctx, tx, source, idempotencyKey, responseJSON, job.CreatedAt, false); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit job outbox inbox transaction: %w", err)
+	}
+
+	return nil
+}
+
+func insertJob(ctx context.Context, executor sqlExecutor, job enginejob.Job) error {
+	_, err := executor.Exec(ctx, `
 		INSERT INTO integration_jobs (
 			id, correlation_id, parent_id, type, kind, direction, status,
 			dedupe_key, idempotency_key, payload_json, result_path, attempts,
@@ -83,7 +143,7 @@ func (r *JobRepository) GetByID(ctx context.Context, id string) (enginejob.Job, 
 	return job, nil
 }
 
-func (r *JobRepository) FindActiveByDedupeKey(ctx context.Context, dedupeKey string) (enginejob.Job, bool, error) {
+func (r *JobRepository) FindLatestByDedupeKey(ctx context.Context, dedupeKey string) (enginejob.Job, bool, error) {
 	if r == nil || r.pool == nil {
 		return enginejob.Job{}, false, fmt.Errorf("postgres job repository is not initialized")
 	}
@@ -95,7 +155,6 @@ func (r *JobRepository) FindActiveByDedupeKey(ctx context.Context, dedupeKey str
 			attempts, COALESCE(last_error, ''), created_at, started_at, finished_at
 		FROM integration_jobs
 		WHERE dedupe_key = $1
-		  AND status IN ('received', 'validated', 'prepared', 'delivering', 'retrying')
 		ORDER BY created_at DESC
 		LIMIT 1
 	`, dedupeKey)
@@ -105,10 +164,48 @@ func (r *JobRepository) FindActiveByDedupeKey(ctx context.Context, dedupeKey str
 		if errors.Is(err, pgx.ErrNoRows) {
 			return enginejob.Job{}, false, nil
 		}
-		return enginejob.Job{}, false, fmt.Errorf("select active integration job by dedupe key: %w", err)
+		return enginejob.Job{}, false, fmt.Errorf("select latest integration job by dedupe key: %w", err)
 	}
 
 	return job, true, nil
+}
+
+func (r *JobRepository) ListByStatus(ctx context.Context, status enginejob.Status, limit int) ([]enginejob.Job, error) {
+	if r == nil || r.pool == nil {
+		return nil, fmt.Errorf("postgres job repository is not initialized")
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+
+	rows, err := r.pool.Query(ctx, `
+		SELECT
+			id, correlation_id, COALESCE(parent_id, ''), type, kind, direction, status,
+			dedupe_key, COALESCE(idempotency_key, ''), payload_json, COALESCE(result_path, ''),
+			attempts, COALESCE(last_error, ''), created_at, started_at, finished_at
+		FROM integration_jobs
+		WHERE status = $1
+		ORDER BY created_at DESC
+		LIMIT $2
+	`, string(status), limit)
+	if err != nil {
+		return nil, fmt.Errorf("select integration jobs by status: %w", err)
+	}
+	defer rows.Close()
+
+	var jobs []enginejob.Job
+	for rows.Next() {
+		job, err := scanJob(rows.Scan)
+		if err != nil {
+			return nil, fmt.Errorf("scan integration job by status: %w", err)
+		}
+		jobs = append(jobs, job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate integration jobs by status: %w", err)
+	}
+
+	return jobs, nil
 }
 
 func (r *JobRepository) UpdateStatus(ctx context.Context, jobID string, status enginejob.Status, lastError string) error {
@@ -157,6 +254,27 @@ func (r *JobRepository) IncrementAttempts(ctx context.Context, jobID string, las
 	`, jobID, lastError)
 	if err != nil {
 		return fmt.Errorf("increment integration job attempts: %w", err)
+	}
+
+	return nil
+}
+
+func (r *JobRepository) ResetForRetry(ctx context.Context, jobID string) error {
+	if r == nil || r.pool == nil {
+		return fmt.Errorf("postgres job repository is not initialized")
+	}
+
+	_, err := r.pool.Exec(ctx, `
+		UPDATE integration_jobs
+		SET status = $2,
+		    attempts = 0,
+		    last_error = NULL,
+		    started_at = NULL,
+		    finished_at = NULL
+		WHERE id = $1
+	`, jobID, string(enginejob.StatusRetrying))
+	if err != nil {
+		return fmt.Errorf("reset integration job for retry: %w", err)
 	}
 
 	return nil

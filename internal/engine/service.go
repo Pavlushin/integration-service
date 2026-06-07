@@ -18,7 +18,6 @@ import (
 type Service struct {
 	jobs      JobRepository
 	inbox     InboxRepository
-	outbox    OutboxWriter
 	storage   storage.Storage
 	workflows *workflow.Registry
 	ids       IDGenerator
@@ -27,7 +26,6 @@ type Service struct {
 func NewService(
 	jobs JobRepository,
 	inbox InboxRepository,
-	outbox OutboxWriter,
 	storageProvider storage.Storage,
 	workflows *workflow.Registry,
 	ids IDGenerator,
@@ -37,8 +35,6 @@ func NewService(
 		return nil, fmt.Errorf("job repository is required")
 	case inbox == nil:
 		return nil, fmt.Errorf("inbox repository is required")
-	case outbox == nil:
-		return nil, fmt.Errorf("outbox writer is required")
 	case storageProvider == nil:
 		return nil, fmt.Errorf("storage is required")
 	case workflows == nil:
@@ -50,7 +46,6 @@ func NewService(
 	return &Service{
 		jobs:      jobs,
 		inbox:     inbox,
-		outbox:    outbox,
 		storage:   storageProvider,
 		workflows: workflows,
 		ids:       ids,
@@ -77,19 +72,54 @@ func (s *Service) StartHeavy(ctx context.Context, input StartHeavyInput) (StartH
 	if input.DedupeKey == "" {
 		return StartHeavyResult{}, fmt.Errorf("dedupe key is required")
 	}
+	if input.IdempotencyKey != "" && input.Source == "" {
+		return StartHeavyResult{}, fmt.Errorf("source is required when idempotency key is provided")
+	}
 
-	if activeJob, found, err := s.jobs.FindActiveByDedupeKey(ctx, input.DedupeKey); err != nil {
-		return StartHeavyResult{}, fmt.Errorf("find active job by dedupe key: %w", err)
-	} else if found {
+	if input.IdempotencyKey != "" {
+		if responseJSON, found, err := s.inbox.GetResponse(ctx, input.Source, input.IdempotencyKey); err != nil {
+			return StartHeavyResult{}, fmt.Errorf("get idempotency response: %w", err)
+		} else if found {
+			result, err := startHeavyResultFromInboxResponse(responseJSON)
+			if err != nil {
+				return StartHeavyResult{}, err
+			}
+			log.Info(
+				"job reused by idempotency key",
+				zap.String("job_id", result.Job.ID),
+				zap.String("idempotency_key", input.IdempotencyKey),
+			)
+			return result, nil
+		}
+	}
+
+	if previousJob, found, err := s.jobs.FindLatestByDedupeKey(ctx, input.DedupeKey); err != nil {
+		return StartHeavyResult{}, fmt.Errorf("find latest job by dedupe key: %w", err)
+	} else if found && isReusableDedupeJob(previousJob) {
+		if input.IdempotencyKey != "" {
+			responseJSON, err := marshalStartHeavyIdempotencyResponse(previousJob)
+			if err != nil {
+				return StartHeavyResult{}, err
+			}
+			if err := s.inbox.SaveResponse(ctx, input.Source, input.IdempotencyKey, responseJSON); err != nil {
+				return StartHeavyResult{}, fmt.Errorf("save idempotency response: %w", err)
+			}
+		}
 		log.Info(
-			"active job reused by dedupe key",
-			zap.String("job_id", activeJob.ID),
-			zap.String("status", string(activeJob.Status)),
+			"job reused by dedupe key",
+			zap.String("job_id", previousJob.ID),
+			zap.String("status", string(previousJob.Status)),
 		)
 		return StartHeavyResult{
-			Job:    activeJob,
+			Job:    previousJob,
 			Reused: true,
 		}, nil
+	} else if found {
+		log.Info(
+			"terminal unsuccessful job is not reused by dedupe key",
+			zap.String("job_id", previousJob.ID),
+			zap.String("status", string(previousJob.Status)),
+		)
 	}
 
 	correlationID := input.CorrelationID
@@ -112,15 +142,6 @@ func (s *Service) StartHeavy(ctx context.Context, input StartHeavyInput) (StartH
 		CreatedAt:      now,
 	}
 
-	if err := s.jobs.Create(ctx, newJob); err != nil {
-		return StartHeavyResult{}, fmt.Errorf("create job: %w", err)
-	}
-	log.Info(
-		"prepare job created",
-		zap.String("job_id", newJob.ID),
-		zap.String("status", string(newJob.Status)),
-	)
-
 	messagePayload, err := json.Marshal(map[string]string{
 		"job_id": newJob.ID,
 	})
@@ -134,12 +155,26 @@ func (s *Service) StartHeavy(ctx context.Context, input StartHeavyInput) (StartH
 		PayloadJSON: messagePayload,
 		CreatedAt:   now,
 	}
-	if err := s.outbox.Enqueue(ctx, outboxRecord); err != nil {
-		return StartHeavyResult{}, fmt.Errorf("enqueue outbox record: %w", err)
+	if input.IdempotencyKey != "" {
+		responseJSON, err := marshalStartHeavyIdempotencyResponse(newJob)
+		if err != nil {
+			return StartHeavyResult{}, err
+		}
+		if err := s.jobs.CreateWithOutboxAndInbox(ctx, newJob, outboxRecord, input.Source, input.IdempotencyKey, responseJSON); err != nil {
+			if reusedResult, found, reuseErr := s.reuseIdempotencyResponse(ctx, input.Source, input.IdempotencyKey); reuseErr != nil {
+				return StartHeavyResult{}, reuseErr
+			} else if found {
+				return reusedResult, nil
+			}
+			return StartHeavyResult{}, fmt.Errorf("create prepare job, outbox record and idempotency response: %w", err)
+		}
+	} else if err := s.jobs.CreateWithOutbox(ctx, newJob, outboxRecord); err != nil {
+		return StartHeavyResult{}, fmt.Errorf("create prepare job and outbox record: %w", err)
 	}
 	log.Info(
-		"outbox record enqueued",
+		"prepare job and outbox record created",
 		zap.String("job_id", newJob.ID),
+		zap.String("status", string(newJob.Status)),
 		zap.String("topic", outboxRecord.Topic),
 		zap.String("outbox_id", outboxRecord.ID),
 	)
@@ -148,4 +183,51 @@ func (s *Service) StartHeavy(ctx context.Context, input StartHeavyInput) (StartH
 		Job:    newJob,
 		Reused: false,
 	}, nil
+}
+
+func isReusableDedupeJob(job enginejob.Job) bool {
+	return job.IsActive() || job.Status == enginejob.StatusDone
+}
+
+func marshalStartHeavyIdempotencyResponse(job enginejob.Job) (json.RawMessage, error) {
+	responseJSON, err := json.Marshal(startHeavyIdempotencyResponse{
+		JobID:         job.ID,
+		CorrelationID: job.CorrelationID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal idempotency response: %w", err)
+	}
+	return responseJSON, nil
+}
+
+func startHeavyResultFromInboxResponse(responseJSON json.RawMessage) (StartHeavyResult, error) {
+	var response startHeavyIdempotencyResponse
+	if err := json.Unmarshal(responseJSON, &response); err != nil {
+		return StartHeavyResult{}, fmt.Errorf("decode idempotency response: %w", err)
+	}
+	if response.JobID == "" {
+		return StartHeavyResult{}, fmt.Errorf("idempotency response job_id is required")
+	}
+	return StartHeavyResult{
+		Job: enginejob.Job{
+			ID:            response.JobID,
+			CorrelationID: response.CorrelationID,
+		},
+		Reused: true,
+	}, nil
+}
+
+func (s *Service) reuseIdempotencyResponse(ctx context.Context, source string, idempotencyKey string) (StartHeavyResult, bool, error) {
+	responseJSON, found, err := s.inbox.GetResponse(ctx, source, idempotencyKey)
+	if err != nil {
+		return StartHeavyResult{}, false, fmt.Errorf("get idempotency response after create failure: %w", err)
+	}
+	if !found {
+		return StartHeavyResult{}, false, nil
+	}
+	result, err := startHeavyResultFromInboxResponse(responseJSON)
+	if err != nil {
+		return StartHeavyResult{}, false, err
+	}
+	return result, true, nil
 }

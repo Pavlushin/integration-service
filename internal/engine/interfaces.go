@@ -23,6 +23,11 @@ type StartHeavyResult struct {
 	Reused bool
 }
 
+type startHeavyIdempotencyResponse struct {
+	JobID         string `json:"job_id"`
+	CorrelationID string `json:"correlation_id"`
+}
+
 type DeliveryJobInput struct {
 	ParentJob      enginejob.Job
 	Direction      enginejob.Direction
@@ -32,8 +37,10 @@ type DeliveryJobInput struct {
 
 type JobRepository interface {
 	Create(ctx context.Context, job enginejob.Job) error
+	CreateWithOutbox(ctx context.Context, job enginejob.Job, record outbox.Record) error
+	CreateWithOutboxAndInbox(ctx context.Context, job enginejob.Job, record outbox.Record, source string, idempotencyKey string, responseJSON json.RawMessage) error
 	GetByID(ctx context.Context, id string) (enginejob.Job, error)
-	FindActiveByDedupeKey(ctx context.Context, dedupeKey string) (enginejob.Job, bool, error)
+	FindLatestByDedupeKey(ctx context.Context, dedupeKey string) (enginejob.Job, bool, error)
 	UpdateStatus(ctx context.Context, jobID string, status enginejob.Status, lastError string) error
 	UpdateResult(ctx context.Context, jobID string, resultPath string) error
 	IncrementAttempts(ctx context.Context, jobID string, lastError string) error

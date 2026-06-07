@@ -92,6 +92,7 @@ func main() {
 		os.Exit(1)
 	}
 	productClient := product.NewClient(product.NewConfigMust())
+	retryPolicy := engine.NewRetryConfigMust().Policy()
 	publisher := core_repository_rabbitMQ_queue.NewProducer(rabbitClient)
 	dispatcher, err := outbox.NewDispatcher(outboxRepository, publisher, time.Second, 100)
 	if err != nil {
@@ -99,12 +100,12 @@ func main() {
 		os.Exit(1)
 	}
 	consumer := core_repository_rabbitMQ_queue.NewConsumer(rabbitClient)
-	prepareProcessor, err := engine.NewPrepareProcessor(jobRepository, outboxRepository, idgen.NewUUIDGenerator(), fileStorage, productClient)
+	prepareProcessor, err := engine.NewPrepareProcessor(jobRepository, outboxRepository, idgen.NewUUIDGenerator(), fileStorage, productClient, retryPolicy)
 	if err != nil {
 		log.Error("failed to initialize prepare processor", zap.Error(err))
 		os.Exit(1)
 	}
-	deliveryProcessor, err := engine.NewDeliveryProcessor(jobRepository, fileStorage)
+	deliveryProcessor, err := engine.NewDeliveryProcessor(jobRepository, outboxRepository, idgen.NewUUIDGenerator(), fileStorage, retryPolicy)
 	if err != nil {
 		log.Error("failed to initialize delivery processor", zap.Error(err))
 		os.Exit(1)
