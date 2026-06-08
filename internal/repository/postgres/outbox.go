@@ -37,14 +37,15 @@ func insertOutboxRecord(ctx context.Context, executor sqlExecutor, record outbox
 
 	_, err := executor.Exec(ctx, `
 		INSERT INTO integration_outbox (
-			id, topic, payload_json, created_at, available_at, published_at, last_error
+			id, topic, payload_json, headers_json, created_at, available_at, published_at, last_error
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, NULLIF($7, '')
+			$1, $2, $3, $4, $5, $6, $7, NULLIF($8, '')
 		)
 	`,
 		record.ID,
 		record.Topic,
 		record.PayloadJSON,
+		record.Headers,
 		record.CreatedAt,
 		record.AvailableAt,
 		record.PublishedAt,
@@ -66,7 +67,7 @@ func (r *OutboxRepository) ListPending(ctx context.Context, limit int) ([]outbox
 	}
 
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, topic, payload_json, created_at, available_at, published_at, COALESCE(last_error, '')
+		SELECT id, topic, payload_json, headers_json, created_at, available_at, published_at, COALESCE(last_error, '')
 		FROM integration_outbox
 		WHERE published_at IS NULL
 		  AND available_at <= NOW()
@@ -82,11 +83,13 @@ func (r *OutboxRepository) ListPending(ctx context.Context, limit int) ([]outbox
 	for rows.Next() {
 		var record outbox.Record
 		var payload json.RawMessage
+		var headers map[string]string
 
 		if err := rows.Scan(
 			&record.ID,
 			&record.Topic,
 			&payload,
+			&headers,
 			&record.CreatedAt,
 			&record.AvailableAt,
 			&record.PublishedAt,
@@ -96,6 +99,7 @@ func (r *OutboxRepository) ListPending(ctx context.Context, limit int) ([]outbox
 		}
 
 		record.PayloadJSON = payload
+		record.Headers = headers
 		records = append(records, record)
 	}
 

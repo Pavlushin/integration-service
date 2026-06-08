@@ -10,8 +10,11 @@ import (
 	"onec-integration/internal/logger"
 	"onec-integration/internal/outbox"
 	"onec-integration/internal/storage"
+	"onec-integration/internal/telemetry"
 	"onec-integration/internal/workflow"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.uber.org/zap"
 )
 
@@ -56,23 +59,34 @@ func (s *Service) StartHeavy(ctx context.Context, input StartHeavyInput) (StartH
 	if s == nil {
 		return StartHeavyResult{}, fmt.Errorf("engine service is nil")
 	}
+	ctx, span := telemetry.Tracer().Start(ctx, "engine.start_heavy")
+	defer span.End()
 
 	log := logger.FromContext(ctx).With(
 		zap.String("job_type", input.Type),
 		zap.String("direction", string(input.Direction)),
 		zap.String("dedupe_key", input.DedupeKey),
 	)
+	span.SetAttributes(
+		attribute.String("job.type", input.Type),
+		attribute.String("job.direction", string(input.Direction)),
+		attribute.String("job.dedupe_key", input.DedupeKey),
+	)
 
 	if input.Type == "" {
+		span.SetStatus(codes.Error, "job type is required")
 		return StartHeavyResult{}, fmt.Errorf("job type is required")
 	}
 	if input.Direction == "" {
+		span.SetStatus(codes.Error, "job direction is required")
 		return StartHeavyResult{}, fmt.Errorf("job direction is required")
 	}
 	if input.DedupeKey == "" {
+		span.SetStatus(codes.Error, "dedupe key is required")
 		return StartHeavyResult{}, fmt.Errorf("dedupe key is required")
 	}
 	if input.IdempotencyKey != "" && input.Source == "" {
+		span.SetStatus(codes.Error, "source is required when idempotency key is provided")
 		return StartHeavyResult{}, fmt.Errorf("source is required when idempotency key is provided")
 	}
 
@@ -116,7 +130,7 @@ func (s *Service) StartHeavy(ctx context.Context, input StartHeavyInput) (StartH
 		}, nil
 	} else if found {
 		log.Info(
-			"terminal unsuccessful job is not reused by dedupe key",
+			"terminal job is not reused by dedupe key",
 			zap.String("job_id", previousJob.ID),
 			zap.String("status", string(previousJob.Status)),
 		)
@@ -153,6 +167,7 @@ func (s *Service) StartHeavy(ctx context.Context, input StartHeavyInput) (StartH
 		ID:          s.ids.NewID(),
 		Topic:       PrepareTopic,
 		PayloadJSON: messagePayload,
+		Headers:     telemetry.InjectHeaders(ctx),
 		CreatedAt:   now,
 	}
 	if input.IdempotencyKey != "" {
@@ -186,7 +201,7 @@ func (s *Service) StartHeavy(ctx context.Context, input StartHeavyInput) (StartH
 }
 
 func isReusableDedupeJob(job enginejob.Job) bool {
-	return job.IsActive() || job.Status == enginejob.StatusDone
+	return job.IsActive()
 }
 
 func marshalStartHeavyIdempotencyResponse(job enginejob.Job) (json.RawMessage, error) {

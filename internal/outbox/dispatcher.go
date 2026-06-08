@@ -8,7 +8,10 @@ import (
 
 	"onec-integration/internal/logger"
 	"onec-integration/internal/queue"
+	"onec-integration/internal/telemetry"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.uber.org/zap"
 )
 
@@ -74,6 +77,14 @@ func (d *Dispatcher) dispatchBatch(ctx context.Context) error {
 	}
 
 	for _, record := range records {
+		recordCtx := telemetry.ExtractContext(ctx, record.Headers)
+		recordCtx, span := telemetry.Tracer().Start(recordCtx, "outbox.publish_record")
+		span.SetAttributes(
+			attribute.String("messaging.system", "rabbitmq"),
+			attribute.String("messaging.destination.name", record.Topic),
+			attribute.String("outbox.id", record.ID),
+		)
+
 		recordLog := log.With(
 			zap.String("outbox_id", record.ID),
 			zap.String("topic", record.Topic),
@@ -81,23 +92,34 @@ func (d *Dispatcher) dispatchBatch(ctx context.Context) error {
 
 		var message queue.Message
 		if err := json.Unmarshal(record.PayloadJSON, &message); err != nil {
-			_ = d.reader.MarkFailed(ctx, record.ID, fmt.Sprintf("decode outbox payload: %v", err))
+			_ = d.reader.MarkFailed(recordCtx, record.ID, fmt.Sprintf("decode outbox payload: %v", err))
 			recordLog.Error("outbox payload decode failed", zap.Error(err))
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "decode outbox payload")
+			span.End()
 			continue
 		}
 		recordLog = recordLog.With(zap.String("job_id", message.JobID))
 		recordLog.Info("publishing outbox record to queue")
+		traceHeaders := telemetry.InjectHeaders(recordCtx)
 
-		if err := d.publisher.PublishJob(ctx, record.Topic, message); err != nil {
-			_ = d.reader.MarkFailed(ctx, record.ID, err.Error())
+		if err := d.publisher.PublishJob(recordCtx, record.Topic, message, traceHeaders); err != nil {
+			_ = d.reader.MarkFailed(recordCtx, record.ID, err.Error())
 			recordLog.Error("queue publish failed", zap.Error(err))
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "publish queue message")
+			span.End()
 			continue
 		}
 
-		if err := d.reader.MarkPublished(ctx, record.ID); err != nil {
+		if err := d.reader.MarkPublished(recordCtx, record.ID); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "mark outbox published")
+			span.End()
 			return fmt.Errorf("mark outbox record published: %w", err)
 		}
 		recordLog.Info("outbox record published")
+		span.End()
 	}
 
 	return nil

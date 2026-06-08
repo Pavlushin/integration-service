@@ -8,8 +8,12 @@ import (
 
 	"onec-integration/internal/logger"
 	"onec-integration/internal/queue"
+	"onec-integration/internal/telemetry"
 
 	"github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
 
@@ -79,7 +83,16 @@ func (c *Consumer) ConsumeJobs(ctx context.Context, queueName string, handler Me
 }
 
 func (c *Consumer) handleDelivery(ctx context.Context, queueName string, delivery amqp091.Delivery, handler MessageHandler) error {
-	log := logger.FromContext(ctx).With(
+	messageCtx := telemetry.ExtractContext(ctx, amqpHeadersToMap(delivery.Headers))
+	messageCtx, span := telemetry.Tracer().Start(messageCtx, "rabbit.consume", trace.WithSpanKind(trace.SpanKindConsumer))
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("messaging.system", "rabbitmq"),
+		attribute.String("messaging.destination.name", queueName),
+		attribute.Int64("messaging.rabbitmq.delivery_tag", int64(delivery.DeliveryTag)),
+	)
+
+	log := logger.FromContext(messageCtx).With(
 		zap.String("queue", queueName),
 		zap.String("delivery_tag", fmt.Sprintf("%d", delivery.DeliveryTag)),
 	)
@@ -88,35 +101,63 @@ func (c *Consumer) handleDelivery(ctx context.Context, queueName string, deliver
 	var message queue.Message
 	if err := json.Unmarshal(delivery.Body, &message); err != nil {
 		if ackErr := delivery.Ack(false); ackErr != nil {
+			span.RecordError(ackErr)
+			span.SetStatus(codes.Error, "ack malformed message")
 			return fmt.Errorf("ack malformed queue message: %w", ackErr)
 		}
 		log.Error("queue message decode failed", zap.Error(err))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "decode queue message")
 		return nil
 	}
 
 	if message.JobID == "" {
 		if ackErr := delivery.Ack(false); ackErr != nil {
+			span.RecordError(ackErr)
+			span.SetStatus(codes.Error, "ack empty job id")
 			return fmt.Errorf("ack queue message with empty job_id: %w", ackErr)
 		}
 		log.Error("queue message job_id is empty")
+		span.SetStatus(codes.Error, "queue message job_id is empty")
 		return nil
 	}
 
 	log = log.With(zap.String("job_id", message.JobID))
 	log.Info("queue message processing started")
+	span.SetAttributes(attribute.String("job.id", message.JobID))
 
-	if err := handler(ctx, message); err != nil {
+	if err := handler(logger.IntoContext(messageCtx, log), message); err != nil {
 		if nackErr := delivery.Nack(false, true); nackErr != nil {
+			span.RecordError(nackErr)
+			span.SetStatus(codes.Error, "nack failed queue message")
 			return fmt.Errorf("nack failed queue message: %w", nackErr)
 		}
 		log.Error("queue message handler failed; message requeued", zap.Error(err))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "queue message handler failed")
 		return nil
 	}
 
 	if err := delivery.Ack(false); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "ack queue message")
 		return fmt.Errorf("ack queue message: %w", err)
 	}
 	log.Info("queue message processing finished", zap.Duration("latency", time.Since(startedAt)))
 
 	return nil
+}
+
+func amqpHeadersToMap(headers amqp091.Table) map[string]string {
+	if len(headers) == 0 {
+		return nil
+	}
+
+	result := make(map[string]string, len(headers))
+	for key, value := range headers {
+		if stringValue, ok := value.(string); ok {
+			result[key] = stringValue
+		}
+	}
+	return result
 }

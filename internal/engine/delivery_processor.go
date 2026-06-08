@@ -10,8 +10,11 @@ import (
 	enginejob "onec-integration/internal/engine/job"
 	"onec-integration/internal/logger"
 	"onec-integration/internal/storage"
+	"onec-integration/internal/telemetry"
 	"onec-integration/internal/worksheetsexport"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.uber.org/zap"
 )
 
@@ -54,6 +57,9 @@ func (p *DeliveryProcessor) Process(ctx context.Context, jobID string) error {
 	if p == nil {
 		return fmt.Errorf("delivery processor is nil")
 	}
+	ctx, span := telemetry.Tracer().Start(ctx, "delivery.process")
+	defer span.End()
+	span.SetAttributes(attribute.String("job.id", jobID))
 
 	log := logger.FromContext(ctx).With(zap.String("job_id", jobID), zap.String("stage", "delivery"))
 	log.Info("delivery processing started")
@@ -64,11 +70,17 @@ func (p *DeliveryProcessor) Process(ctx context.Context, jobID string) error {
 
 	job, err := p.jobs.GetByID(ctx, jobID)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "load delivery job")
 		return fmt.Errorf("load delivery job: %w", err)
 	}
 	log = log.With(
 		zap.String("correlation_id", job.CorrelationID),
 		zap.String("job_type", job.Type),
+	)
+	span.SetAttributes(
+		attribute.String("job.correlation_id", job.CorrelationID),
+		attribute.String("job.type", job.Type),
 	)
 
 	if job.Kind != enginejob.KindDelivery {

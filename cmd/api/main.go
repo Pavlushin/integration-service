@@ -14,6 +14,7 @@ import (
 	"onec-integration/internal/logger"
 	postgresrepository "onec-integration/internal/repository/postgres"
 	"onec-integration/internal/storage"
+	"onec-integration/internal/telemetry"
 	httpmiddleware "onec-integration/internal/transport/http/middleware"
 	httpserver "onec-integration/internal/transport/http/server"
 	"onec-integration/internal/workflow"
@@ -40,6 +41,15 @@ func main() {
 	}
 	defer func() {
 		_ = log.Close()
+	}()
+
+	telemetryProvider, err := telemetry.Init(ctx, telemetry.NewConfigMust(), "onec-integration-api")
+	if err != nil {
+		log.Error("failed to initialize telemetry", zap.Error(err))
+		os.Exit(1)
+	}
+	defer func() {
+		_ = telemetryProvider.Shutdown(context.Background())
 	}()
 
 	postgresPool, err := postgresrepository.NewPool(ctx, postgresrepository.NewConfigMust())
@@ -107,6 +117,7 @@ func main() {
 		router,
 		httpmiddleware.RequestID(),
 		httpmiddleware.CorrelationID(),
+		httpmiddleware.Telemetry(),
 		httpmiddleware.Logger(log),
 		httpmiddleware.Panic(),
 		httpmiddleware.Trace(),

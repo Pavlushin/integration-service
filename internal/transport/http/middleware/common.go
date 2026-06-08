@@ -6,6 +6,7 @@ import (
 
 	"onec-integration/internal/logger"
 	"onec-integration/internal/requestctx"
+	"onec-integration/internal/telemetry"
 	httpresponse "onec-integration/internal/transport/http/response"
 
 	"github.com/google/uuid"
@@ -49,6 +50,12 @@ func Logger(log *logger.Logger) Middleware {
 				zap.String("method", r.Method),
 				zap.String("path", r.URL.Path),
 			)
+			if traceID, spanID := telemetry.TraceFields(r.Context()); traceID != "" {
+				requestLogger = requestLogger.With(
+					zap.String("trace_id", traceID),
+					zap.String("span_id", spanID),
+				)
+			}
 
 			ctx := logger.IntoContext(r.Context(), requestLogger)
 			next.ServeHTTP(w, r.WithContext(ctx))

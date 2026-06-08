@@ -18,7 +18,7 @@ func NewProducer(client *Client) *Producer {
 	return &Producer{client: client}
 }
 
-func (p *Producer) PublishJob(ctx context.Context, queueName string, message queue.Message) error {
+func (p *Producer) PublishJob(ctx context.Context, queueName string, message queue.Message, headers map[string]string) error {
 	if p == nil || p.client == nil {
 		return fmt.Errorf("rabbitmq producer is not initialized")
 	}
@@ -38,6 +38,11 @@ func (p *Producer) PublishJob(ctx context.Context, queueName string, message que
 		return fmt.Errorf("marshal queue message: %w", err)
 	}
 
+	amqpHeaders := amqp091.Table{}
+	for key, value := range headers {
+		amqpHeaders[key] = value
+	}
+
 	if err := ch.PublishWithContext(
 		ctx,
 		"",
@@ -47,6 +52,7 @@ func (p *Producer) PublishJob(ctx context.Context, queueName string, message que
 		amqp091.Publishing{
 			ContentType:  "application/json",
 			DeliveryMode: amqp091.Persistent,
+			Headers:      amqpHeaders,
 			Body:         body,
 		},
 	); err != nil {

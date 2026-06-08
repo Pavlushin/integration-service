@@ -99,7 +99,7 @@ func (g *sequenceIDGenerator) NewID() string {
 	return id
 }
 
-func TestStartHeavyReusesDoneJobByDedupeKey(t *testing.T) {
+func TestStartHeavyCreatesNewJobAfterDoneJobByDedupeKey(t *testing.T) {
 	repo := &startHeavyJobRepository{
 		latestFound: true,
 		latestJob: enginejob.Job{
@@ -134,19 +134,19 @@ func TestStartHeavyReusesDoneJobByDedupeKey(t *testing.T) {
 	})
 
 	if err != nil {
-		t.Fatalf("expected done job reuse to succeed, got %v", err)
+		t.Fatalf("expected new job after done job, got %v", err)
 	}
-	if !result.Reused {
-		t.Fatalf("expected done job to be reused")
+	if result.Reused {
+		t.Fatalf("expected done job not to be reused")
 	}
-	if result.Job.ID != "job-done" {
-		t.Fatalf("expected job-done to be returned, got %q", result.Job.ID)
+	if result.Job.ID != "job-new" {
+		t.Fatalf("expected new job to be returned, got %q", result.Job.ID)
 	}
-	if len(repo.createdJobs) != 0 {
-		t.Fatalf("expected no new jobs to be created, got %d", len(repo.createdJobs))
+	if len(repo.createdJobs) != 1 {
+		t.Fatalf("expected one new job to be created, got %d", len(repo.createdJobs))
 	}
-	if len(repo.createdOutboxRecords) != 0 {
-		t.Fatalf("expected no outbox records for reused done job, got %d", len(repo.createdOutboxRecords))
+	if len(repo.createdOutboxRecords) != 1 {
+		t.Fatalf("expected one outbox record for new job after done, got %d", len(repo.createdOutboxRecords))
 	}
 }
 

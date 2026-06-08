@@ -45,9 +45,9 @@ paths:
       description: >
         Creates or reuses a prepare job for the requested date range. The
         dedupe key is `worksheets_export_test:{date_from}:{date_to}`.
-        Active jobs and successfully completed `done` jobs are reused and
-        returned with `reused=true`. Terminal unsuccessful jobs (`dlq`,
-        `failed`) are not reused, so a repeated request can create a new job.
+        Only active jobs are reused and returned with `reused=true`.
+        Terminal jobs (`done`, `dlq`, `failed`) are not reused, so a repeated
+        request after completion creates a new job.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:

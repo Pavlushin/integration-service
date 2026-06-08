@@ -8,6 +8,8 @@ services:
       args:
         SERVICE: api
     depends_on:
+      jaeger:
+        condition: service_started
       rabbitmq:
         condition: service_healthy
       postgres:
@@ -15,6 +17,7 @@ services:
     env_file:
       - ${PROJECT_ROOT}/.env
     environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
       RABBIT_MQ_HOST: rabbitmq
       RABBIT_MQ_PORT: 5672
       POSTGRES_HOST: postgres
@@ -32,6 +35,8 @@ services:
       args:
         SERVICE: worker
     depends_on:
+      jaeger:
+        condition: service_started
       rabbitmq:
         condition: service_healthy
       postgres:
@@ -39,6 +44,7 @@ services:
     env_file:
       - ${PROJECT_ROOT}/.env
     environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
       RABBIT_MQ_HOST: rabbitmq
       RABBIT_MQ_PORT: 5672
       POSTGRES_HOST: postgres
@@ -55,6 +61,8 @@ services:
         SERVICE: worker
     profiles: ["e2e"]
     depends_on:
+      jaeger:
+        condition: service_started
       rabbitmq:
         condition: service_healthy
       postgres:
@@ -64,6 +72,7 @@ services:
     env_file:
       - ${PROJECT_ROOT}/.env
     environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
       RABBIT_MQ_HOST: rabbitmq
       RABBIT_MQ_PORT: 5672
       POSTGRES_HOST: postgres
@@ -84,6 +93,12 @@ services:
     profiles: ["e2e"]
     ports:
       - "127.0.0.1:${FAKE_PRODUCT_API_PORT:-18081}:8081"
+    restart: unless-stopped
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.68.0
+    ports:
+      - "127.0.0.1:${JAEGER_UI_PORT:-16686}:16686"
     restart: unless-stopped
 
   postgres:

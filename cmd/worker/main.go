@@ -18,6 +18,7 @@ import (
 	"onec-integration/internal/queue"
 	postgresrepository "onec-integration/internal/repository/postgres"
 	"onec-integration/internal/storage"
+	"onec-integration/internal/telemetry"
 
 	"github.com/joho/godotenv"
 	"go.uber.org/zap"
@@ -43,6 +44,15 @@ func main() {
 	}()
 
 	ctx = logger.IntoContext(ctx, log)
+
+	telemetryProvider, err := telemetry.Init(ctx, telemetry.NewConfigMust(), "onec-integration-worker")
+	if err != nil {
+		log.Error("failed to initialize telemetry", zap.Error(err))
+		os.Exit(1)
+	}
+	defer func() {
+		_ = telemetryProvider.Shutdown(context.Background())
+	}()
 
 	postgresPool, err := postgresrepository.NewPool(ctx, postgresrepository.NewConfigMust())
 	if err != nil {

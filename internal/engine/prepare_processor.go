@@ -12,8 +12,11 @@ import (
 	"onec-integration/internal/logger"
 	"onec-integration/internal/outbox"
 	"onec-integration/internal/storage"
+	"onec-integration/internal/telemetry"
 	"onec-integration/internal/worksheetsexport"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.uber.org/zap"
 )
 
@@ -61,6 +64,9 @@ func (p *PrepareProcessor) Process(ctx context.Context, jobID string) error {
 	if p == nil {
 		return fmt.Errorf("prepare processor is nil")
 	}
+	ctx, span := telemetry.Tracer().Start(ctx, "prepare.process")
+	defer span.End()
+	span.SetAttributes(attribute.String("job.id", jobID))
 
 	log := logger.FromContext(ctx).With(zap.String("job_id", jobID), zap.String("stage", "prepare"))
 	log.Info("prepare processing started")
@@ -71,11 +77,17 @@ func (p *PrepareProcessor) Process(ctx context.Context, jobID string) error {
 
 	job, err := p.jobs.GetByID(ctx, jobID)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "load prepare job")
 		return fmt.Errorf("load prepare job: %w", err)
 	}
 	log = log.With(
 		zap.String("correlation_id", job.CorrelationID),
 		zap.String("job_type", job.Type),
+	)
+	span.SetAttributes(
+		attribute.String("job.correlation_id", job.CorrelationID),
+		attribute.String("job.type", job.Type),
 	)
 
 	if job.Kind != enginejob.KindPrepare {
@@ -161,6 +173,7 @@ func (p *PrepareProcessor) Process(ctx context.Context, jobID string) error {
 		ID:          p.ids.NewID(),
 		Topic:       DeliveryTopic,
 		PayloadJSON: messagePayload,
+		Headers:     telemetry.InjectHeaders(ctx),
 		CreatedAt:   time.Now().UTC(),
 	}
 	if err := p.jobs.CreateWithOutbox(ctx, deliveryJob, record); err != nil {
