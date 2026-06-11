@@ -10,7 +10,6 @@ import (
 
 	core_repository_rabbitMQ "onec-integration/core/repository/rabbitMQ"
 	core_repository_rabbitMQ_queue "onec-integration/core/repository/rabbitMQ/queue"
-	"onec-integration/internal/client/product"
 	"onec-integration/internal/engine"
 	"onec-integration/internal/idgen"
 	"onec-integration/internal/logger"
@@ -19,6 +18,8 @@ import (
 	postgresrepository "onec-integration/internal/repository/postgres"
 	"onec-integration/internal/storage"
 	"onec-integration/internal/telemetry"
+	"onec-integration/internal/worksheets/usersreports"
+	"onec-integration/internal/worksheets/usersreports/lkdb"
 
 	"github.com/joho/godotenv"
 	"go.uber.org/zap"
@@ -94,6 +95,14 @@ func main() {
 
 	log.Info("postgres connected")
 
+	lkPool, err := lkdb.NewPool(ctx, lkdb.NewConfigMust())
+	if err != nil {
+		log.Error("failed to connect to lk mariadb", zap.Error(err))
+		os.Exit(1)
+	}
+	defer lkPool.Close()
+	log.Info("lk mariadb connected")
+
 	jobRepository := postgresrepository.NewJobRepository(postgresPool)
 	outboxRepository := postgresrepository.NewOutboxRepository(postgresPool)
 	fileStorage, err := storage.NewFilesystemStorage("out/json")
@@ -101,7 +110,17 @@ func main() {
 		log.Error("failed to initialize file storage", zap.Error(err))
 		os.Exit(1)
 	}
-	productClient := product.NewClient(product.NewConfigMust())
+	lkConfig := lkdb.NewConfigMust()
+	worksheetsStorage, err := lkdb.NewStorage(lkPool, lkConfig.NextDB)
+	if err != nil {
+		log.Error("failed to initialize lk worksheets storage", zap.Error(err))
+		os.Exit(1)
+	}
+	worksheetsExporter, err := usersreports.NewService(worksheetsStorage)
+	if err != nil {
+		log.Error("failed to initialize worksheets exporter", zap.Error(err))
+		os.Exit(1)
+	}
 	retryPolicy := engine.NewRetryConfigMust().Policy()
 	publisher := core_repository_rabbitMQ_queue.NewProducer(rabbitClient)
 	dispatcher, err := outbox.NewDispatcher(outboxRepository, publisher, time.Second, 100)
@@ -110,7 +129,7 @@ func main() {
 		os.Exit(1)
 	}
 	consumer := core_repository_rabbitMQ_queue.NewConsumer(rabbitClient)
-	prepareProcessor, err := engine.NewPrepareProcessor(jobRepository, outboxRepository, idgen.NewUUIDGenerator(), fileStorage, productClient, retryPolicy)
+	prepareProcessor, err := engine.NewPrepareProcessor(jobRepository, outboxRepository, idgen.NewUUIDGenerator(), fileStorage, worksheetsExporter, retryPolicy)
 	if err != nil {
 		log.Error("failed to initialize prepare processor", zap.Error(err))
 		os.Exit(1)

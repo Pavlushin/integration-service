@@ -110,16 +110,22 @@
 - поставить ее в очередь;
 - сразу вернуть `job_id` и `correlation_id`, не дожидаясь результата.
 
-Текущая тестовая route:
+Текущая route для первого предметного export:
+
+- `POST /integration/api/v1/worksheets/users-reports/export`
+
+Для обратной совместимости пока также оставлен legacy alias:
 
 - `POST /integration/api/v1/users`
 
-Текущий тестовый request body:
+Текущий request body:
 
 ```json
 {
   "date_from": "2026-05-01",
-  "date_to": "2026-05-29"
+  "date_to": "2026-05-29",
+  "location_code_1c": "СПЗК-0047",
+  "employee_code_1c": "EMP001"
 }
 ```
 

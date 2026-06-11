@@ -4,15 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
-	"onec-integration/internal/client/product"
 	enginejob "onec-integration/internal/engine/job"
 	"onec-integration/internal/outbox"
 	"onec-integration/internal/storage"
+	"onec-integration/internal/worksheets/usersreports"
 )
 
 type prepareJobRepository struct {
@@ -84,13 +82,19 @@ func (w *prepareOutboxWriter) Enqueue(_ context.Context, record outbox.Record) e
 	return nil
 }
 
-func TestPrepareProcessorDoesNotPersistDeliveryJobWithoutOutboxRecord(t *testing.T) {
-	productAPIServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"source":"test-product-api"}`))
-	}))
-	defer productAPIServer.Close()
+type prepareExporter struct {
+	body []byte
+	err  error
+}
 
+func (e *prepareExporter) Export(_ context.Context, _ usersreports.Request) ([]byte, error) {
+	if e.err != nil {
+		return nil, e.err
+	}
+	return e.body, nil
+}
+
+func TestPrepareProcessorDoesNotPersistDeliveryJobWithoutOutboxRecord(t *testing.T) {
 	repo := &prepareJobRepository{
 		job: enginejob.Job{
 			ID:             "prepare-1",
@@ -112,11 +116,7 @@ func TestPrepareProcessorDoesNotPersistDeliveryJobWithoutOutboxRecord(t *testing
 		outboxWriter,
 		&sequenceIDGenerator{next: []string{"delivery-1", "delivery-outbox-1", "retry-outbox-1"}},
 		storage.NoopStorage{},
-		product.NewClient(product.Config{
-			BaseURL:     productAPIServer.URL,
-			BearerToken: "test-token",
-			Timeout:     time.Second,
-		}),
+		&prepareExporter{body: []byte(`{"source":"test-lk-mariadb"}`)},
 		RetryPolicy{MaxAttempts: 3, Backoff: time.Second},
 	)
 	if err != nil {

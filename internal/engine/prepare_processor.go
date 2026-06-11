@@ -7,13 +7,12 @@ import (
 	"path/filepath"
 	"time"
 
-	"onec-integration/internal/client/product"
 	enginejob "onec-integration/internal/engine/job"
 	"onec-integration/internal/logger"
 	"onec-integration/internal/outbox"
 	"onec-integration/internal/storage"
 	"onec-integration/internal/telemetry"
-	"onec-integration/internal/worksheetsexport"
+	"onec-integration/internal/worksheets/usersreports"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -21,12 +20,12 @@ import (
 )
 
 type PrepareProcessor struct {
-	jobs    JobRepository
-	outbox  OutboxWriter
-	ids     IDGenerator
-	storage storage.Storage
-	client  *product.Client
-	retry   RetryPolicy
+	jobs     JobRepository
+	outbox   OutboxWriter
+	ids      IDGenerator
+	storage  storage.Storage
+	exporter usersreports.Exporter
+	retry    RetryPolicy
 }
 
 func NewPrepareProcessor(
@@ -34,7 +33,7 @@ func NewPrepareProcessor(
 	outboxWriter OutboxWriter,
 	ids IDGenerator,
 	storageProvider storage.Storage,
-	client *product.Client,
+	exporter usersreports.Exporter,
 	retryPolicy RetryPolicy,
 ) (*PrepareProcessor, error) {
 	switch {
@@ -46,17 +45,17 @@ func NewPrepareProcessor(
 		return nil, fmt.Errorf("id generator is required")
 	case storageProvider == nil:
 		return nil, fmt.Errorf("storage is required")
-	case client == nil:
-		return nil, fmt.Errorf("product client is required")
+	case exporter == nil:
+		return nil, fmt.Errorf("users reports exporter is required")
 	}
 
 	return &PrepareProcessor{
-		jobs:    jobs,
-		outbox:  outboxWriter,
-		ids:     ids,
-		storage: storageProvider,
-		client:  client,
-		retry:   retryPolicy.WithDefaults(),
+		jobs:     jobs,
+		outbox:   outboxWriter,
+		ids:      ids,
+		storage:  storageProvider,
+		exporter: exporter,
+		retry:    retryPolicy.WithDefaults(),
 	}, nil
 }
 
@@ -103,24 +102,24 @@ func (p *PrepareProcessor) Process(ctx context.Context, jobID string) error {
 	}
 	log.Info("prepare job validated")
 
-	var request worksheetsexport.Request
+	var request usersreports.Request
 	if err := json.Unmarshal(job.PayloadJSON, &request); err != nil {
 		return p.recordFailure(ctx, log, job, fmt.Errorf("decode prepare job payload: %w", err))
 	}
 	log.Info(
-		"calling product api for worksheets export",
+		"building worksheets export from lk mariadb",
 		zap.String("date_from", request.DateFrom),
 		zap.String("date_to", request.DateTo),
 	)
 
-	apiStartedAt := time.Now()
-	responseBody, err := p.client.ExportWorksheets(ctx, request)
+	exportStartedAt := time.Now()
+	responseBody, err := p.exporter.Export(ctx, request)
 	if err != nil {
 		return p.recordFailure(ctx, log, job, fmt.Errorf("export worksheets: %w", err))
 	}
 	log.Info(
-		"product api response received",
-		zap.Duration("latency", time.Since(apiStartedAt)),
+		"worksheets export built from lk mariadb",
+		zap.Duration("latency", time.Since(exportStartedAt)),
 		zap.Int("bytes", len(responseBody)),
 	)
 
@@ -139,7 +138,7 @@ func (p *PrepareProcessor) Process(ctx context.Context, jobID string) error {
 	}
 	log.Info("prepare job marked prepared", zap.String("result_path", tempPath))
 
-	deliveryPayload, err := json.Marshal(worksheetsexport.DeliveryPayload{
+	deliveryPayload, err := json.Marshal(usersreports.DeliveryPayload{
 		PrepareJobID: job.ID,
 		TempPath:     tempPath,
 	})

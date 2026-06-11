@@ -1,23 +1,30 @@
 package integration
 
 import (
-	"fmt"
 	"net/http"
 
 	enginejob "onec-integration/internal/engine/job"
 	"onec-integration/internal/gateway"
-	"onec-integration/internal/worksheetsexport"
+	"onec-integration/internal/worksheets/usersreports"
 )
 
-func RegisterUsersHighReq(router *gateway.Router) {
-	gateway.RegisterHigh(router, gateway.HighOptions[worksheetsexport.Request]{
+func RegisterWorksheetsUsersReportsHighReq(router *gateway.Router) {
+	registerWorksheetsUsersReportsRoute(router, "/integration/api/v1/worksheets/users-reports/export")
+}
+
+func RegisterLegacyUsersHighReq(router *gateway.Router) {
+	registerWorksheetsUsersReportsRoute(router, "/integration/api/v1/users")
+}
+
+func registerWorksheetsUsersReportsRoute(router *gateway.Router, path string) {
+	gateway.RegisterHigh(router, gateway.HighOptions[usersreports.Request]{
 		Method:    http.MethodPost,
-		Path:      "/integration/api/v1/users",
+		Path:      path,
 		Source:    "integration_api",
-		Type:      "worksheets_export_test",
+		Type:      "worksheets_users_reports_export",
 		Direction: enginejob.DirectionInbound,
-		BuildDedupe: func(req worksheetsexport.Request) (string, error) {
-			return fmt.Sprintf("worksheets_export_test:%s:%s", req.DateFrom, req.DateTo), nil
+		BuildDedupe: func(req usersreports.Request) (string, error) {
+			return usersreports.BuildDedupeKey(req), nil
 		},
 	})
 }

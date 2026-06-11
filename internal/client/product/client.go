@@ -9,7 +9,7 @@ import (
 	"net/url"
 
 	"onec-integration/internal/telemetry"
-	"onec-integration/internal/worksheetsexport"
+	"onec-integration/internal/worksheets/usersreports"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -38,7 +38,7 @@ func NewClient(config Config) *Client {
 	}
 }
 
-func (c *Client) ExportWorksheets(ctx context.Context, req worksheetsexport.Request) ([]byte, error) {
+func (c *Client) ExportWorksheets(ctx context.Context, req usersreports.Request) ([]byte, error) {
 	if c == nil {
 		return nil, fmt.Errorf("product client is nil")
 	}
@@ -55,6 +55,12 @@ func (c *Client) ExportWorksheets(ctx context.Context, req worksheetsexport.Requ
 	query := endpoint.Query()
 	query.Set("date_from", req.DateFrom)
 	query.Set("date_to", req.DateTo)
+	if req.LocationCode1C != nil && *req.LocationCode1C != "" {
+		query.Set("location_code_1c", *req.LocationCode1C)
+	}
+	if req.EmployeeCode1C != nil && *req.EmployeeCode1C != "" {
+		query.Set("employee_code_1c", *req.EmployeeCode1C)
+	}
 	endpoint.RawQuery = query.Encode()
 	span.SetAttributes(
 		semconv.HTTPRequestMethodGet,

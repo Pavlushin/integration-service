@@ -11,7 +11,7 @@ import (
 	"onec-integration/internal/logger"
 	"onec-integration/internal/storage"
 	"onec-integration/internal/telemetry"
-	"onec-integration/internal/worksheetsexport"
+	"onec-integration/internal/worksheets/usersreports"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -96,7 +96,7 @@ func (p *DeliveryProcessor) Process(ctx context.Context, jobID string) error {
 	}
 	log.Info("delivery job marked delivering")
 
-	var payload worksheetsexport.DeliveryPayload
+	var payload usersreports.DeliveryPayload
 	if err := json.Unmarshal(job.PayloadJSON, &payload); err != nil {
 		return p.recordFailure(ctx, log, job, fmt.Errorf("decode delivery job payload: %w", err))
 	}

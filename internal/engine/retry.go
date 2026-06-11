@@ -9,6 +9,7 @@ import (
 
 	enginejob "onec-integration/internal/engine/job"
 	"onec-integration/internal/outbox"
+	"onec-integration/internal/telemetry"
 )
 
 const (
@@ -87,6 +88,7 @@ func recordProcessingFailure(
 		ID:          ids.NewID(),
 		Topic:       retryTopic,
 		PayloadJSON: messagePayload,
+		Headers:     telemetry.InjectHeaders(ctx),
 		CreatedAt:   now,
 		AvailableAt: now.Add(policy.Backoff),
 	}
