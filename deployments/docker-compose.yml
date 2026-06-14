@@ -80,6 +80,7 @@ services:
       PRODUCT_API_BASE_URL: http://fake-product-api:8081
       PRODUCT_API_BEARER_TOKEN: local-fake-token
       PRODUCT_API_TIMEOUT: 10s
+      WORKSHEETS_EXPORT_SOURCE: disabled
     volumes:
       - ${PROJECT_ROOT}/out:/app/out
     restart: unless-stopped

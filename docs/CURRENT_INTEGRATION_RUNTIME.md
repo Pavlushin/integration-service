@@ -173,20 +173,19 @@ Processor:
 8. `prepare` job переводится в `prepared`;
 9. `delivery` job и outbox record для topic `integration.delivery` создаются в одной DB transaction.
 
-Текущая тестовая реализация сбора данных:
+Текущая реализация сбора данных для `worksheets/users-reports`:
 
-- вместо полноценной агрегации данных вызывается внешний product API;
-- его ответ используется как итоговый большой JSON.
+- при `WORKSHEETS_EXPORT_SOURCE=lk_mariadb` worker подключается к LK MariaDB и собирает JSON из таблиц worksheets;
+- при `WORKSHEETS_EXPORT_SOURCE=disabled` worker стартует без LK MariaDB, но worksheets prepare job завершается явной non-retryable configuration error со статусом `failed`;
+- режим `disabled` предназначен для локального/E2E запуска инфраструктуры без доступа к LK и не подменяет реальные данные.
 
-Текущая тестовая интеграция:
+Обязательные настройки для LK-backed режима:
 
-- `GET https://lk.sps38.pro/api/worksheets/export`
-- query params:
-  - `date_from`
-  - `date_to`
-- headers:
-  - `Authorization: Bearer <token>`
-  - `Accept: application/json`
+- `WORKSHEETS_EXPORT_SOURCE=lk_mariadb`
+- `LK_MARIADB_HOST`
+- `LK_MARIADB_DATABASE`
+- `LK_MARIADB_USER`
+- `LK_MARIADB_PASSWORD`
 
 В терминах архитектуры это не меняет роль этапа:
 

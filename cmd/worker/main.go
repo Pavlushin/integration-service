@@ -95,14 +95,6 @@ func main() {
 
 	log.Info("postgres connected")
 
-	lkPool, err := lkdb.NewPool(ctx, lkdb.NewConfigMust())
-	if err != nil {
-		log.Error("failed to connect to lk mariadb", zap.Error(err))
-		os.Exit(1)
-	}
-	defer lkPool.Close()
-	log.Info("lk mariadb connected")
-
 	jobRepository := postgresrepository.NewJobRepository(postgresPool)
 	outboxRepository := postgresrepository.NewOutboxRepository(postgresPool)
 	fileStorage, err := storage.NewFilesystemStorage("out/json")
@@ -110,17 +102,35 @@ func main() {
 		log.Error("failed to initialize file storage", zap.Error(err))
 		os.Exit(1)
 	}
-	lkConfig := lkdb.NewConfigMust()
-	worksheetsStorage, err := lkdb.NewStorage(lkPool, lkConfig.NextDB)
-	if err != nil {
-		log.Error("failed to initialize lk worksheets storage", zap.Error(err))
-		os.Exit(1)
+
+	worksheetsSourceConfig := usersreports.NewSourceConfigMust()
+	var worksheetsExporter usersreports.Exporter
+	switch worksheetsSourceConfig.Source {
+	case usersreports.SourceLKMariaDB:
+		lkConfig := lkdb.NewConfigMust()
+		lkPool, err := lkdb.NewPool(ctx, lkConfig)
+		if err != nil {
+			log.Error("failed to connect to lk mariadb", zap.Error(err))
+			os.Exit(1)
+		}
+		defer lkPool.Close()
+		log.Info("lk mariadb connected")
+
+		worksheetsStorage, err := lkdb.NewStorage(lkPool, lkConfig.NextDB)
+		if err != nil {
+			log.Error("failed to initialize lk worksheets storage", zap.Error(err))
+			os.Exit(1)
+		}
+		worksheetsExporter, err = usersreports.NewService(worksheetsStorage)
+		if err != nil {
+			log.Error("failed to initialize worksheets exporter", zap.Error(err))
+			os.Exit(1)
+		}
+	case usersreports.SourceDisabled:
+		worksheetsExporter = usersreports.NewDisabledExporter()
+		log.Warn("worksheets users reports export disabled", zap.String("source", string(worksheetsSourceConfig.Source)))
 	}
-	worksheetsExporter, err := usersreports.NewService(worksheetsStorage)
-	if err != nil {
-		log.Error("failed to initialize worksheets exporter", zap.Error(err))
-		os.Exit(1)
-	}
+
 	retryPolicy := engine.NewRetryConfigMust().Policy()
 	publisher := core_repository_rabbitMQ_queue.NewProducer(rabbitClient)
 	dispatcher, err := outbox.NewDispatcher(outboxRepository, publisher, time.Second, 100)
