@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"onec-integration/internal/engine/failure"
 	enginejob "onec-integration/internal/engine/job"
 	"onec-integration/internal/outbox"
 )
@@ -172,6 +173,45 @@ func TestRecordProcessingFailureMovesJobToDLQAtAttemptLimit(t *testing.T) {
 	}
 	if len(outboxWriter.records) != 0 {
 		t.Fatalf("expected no retry outbox records at attempt limit, got %d", len(outboxWriter.records))
+	}
+}
+
+func TestRecordProcessingFailureMarksNonRetryableFailureFailedWithoutRetry(t *testing.T) {
+	repo := &retryJobRepository{}
+	outboxWriter := &retryOutboxWriter{}
+	job := enginejob.Job{
+		ID:       "job-1",
+		Attempts: 0,
+	}
+
+	err := recordProcessingFailure(
+		context.Background(),
+		RetryPolicy{MaxAttempts: 4, Backoff: 2 * time.Second},
+		repo,
+		outboxWriter,
+		retryIDGenerator{next: "retry-outbox-1"},
+		PrepareTopic,
+		job,
+		failure.NonRetryable(errors.New("worksheets users reports export is disabled")),
+	)
+
+	if err != nil {
+		t.Fatalf("expected non-retryable failure recording to succeed, got %v", err)
+	}
+	if repo.incrementJobID != "job-1" {
+		t.Fatalf("expected attempts increment for job-1, got %q", repo.incrementJobID)
+	}
+	if repo.incrementError != "worksheets users reports export is disabled" {
+		t.Fatalf("expected last error to be recorded, got %q", repo.incrementError)
+	}
+	if repo.statusJobID != "job-1" || repo.status != enginejob.StatusFailed {
+		t.Fatalf("expected job-1 to be marked failed, got %q/%q", repo.statusJobID, repo.status)
+	}
+	if repo.statusLastError != "worksheets users reports export is disabled" {
+		t.Fatalf("expected failed status error to be recorded, got %q", repo.statusLastError)
+	}
+	if len(outboxWriter.records) != 0 {
+		t.Fatalf("expected no retry outbox records for non-retryable failure, got %d", len(outboxWriter.records))
 	}
 }
 

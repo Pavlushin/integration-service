@@ -38,13 +38,14 @@ paths:
                 $ref: "#/components/schemas/HealthResponse"
         "503":
           description: Dependency is unavailable.
-  /integration/api/v1/users:
+  /integration/api/v1/worksheets/users-reports/export:
     post:
       tags: [heavy-requests]
-      summary: Start worksheets export heavy request.
+      summary: Start worksheets users reports export heavy request.
       description: >
         Creates or reuses a prepare job for the requested date range. The
-        dedupe key is `worksheets_export_test:{date_from}:{date_to}`.
+        dedupe key is
+        `worksheets_users_reports:{date_from}:{date_to}:{location_code_1c}:{employee_code_1c}`.
         Only active jobs are reused and returned with `reused=true`.
         Terminal jobs (`done`, `dlq`, `failed`) are not reused, so a repeated
         request after completion creates a new job.
@@ -61,6 +62,47 @@ paths:
                 value:
                   date_from: "2026-06-01"
                   date_to: "2026-06-02"
+                  location_code_1c: "СПЗК-0047"
+                  employee_code_1c: "EMP001"
+      responses:
+        "202":
+          description: Heavy request was accepted or deduplicated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HeavyStartResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /integration/api/v1/users:
+    post:
+      tags: [heavy-requests]
+      summary: Start worksheets users reports export heavy request.
+      deprecated: true
+      description: >
+        Legacy alias for `/integration/api/v1/worksheets/users-reports/export`.
+        Creates or reuses a prepare job for the requested date range. The
+        dedupe key is
+        `worksheets_users_reports:{date_from}:{date_to}:{location_code_1c}:{employee_code_1c}`.
+        Only active jobs are reused and returned with `reused=true`.
+        Terminal jobs (`done`, `dlq`, `failed`) are not reused, so a repeated
+        request after completion creates a new job.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorksheetsExportRequest"
+            examples:
+              default:
+                value:
+                  date_from: "2026-06-01"
+                  date_to: "2026-06-02"
+                  location_code_1c: "СПЗК-0047"
+                  employee_code_1c: "EMP001"
       responses:
         "202":
           description: Heavy request was accepted or deduplicated.
@@ -342,3 +384,9 @@ components:
         date_to:
           type: string
           format: date
+        location_code_1c:
+          type: string
+          description: Optional 1C location code filter.
+        employee_code_1c:
+          type: string
+          description: Optional 1C employee code filter.

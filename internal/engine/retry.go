@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"onec-integration/internal/engine/failure"
 	enginejob "onec-integration/internal/engine/job"
 	"onec-integration/internal/outbox"
 	"onec-integration/internal/telemetry"
@@ -62,6 +63,13 @@ func recordProcessingFailure(
 	lastError := cause.Error()
 	if err := jobs.IncrementAttempts(ctx, job.ID, lastError); err != nil {
 		return fmt.Errorf("increment job attempts after processing failure: %w", err)
+	}
+
+	if failure.IsNonRetryable(cause) {
+		if err := jobs.UpdateStatus(ctx, job.ID, enginejob.StatusFailed, lastError); err != nil {
+			return fmt.Errorf("mark job failed after non-retryable processing failure: %w", err)
+		}
+		return nil
 	}
 
 	nextAttempt := job.Attempts + 1
