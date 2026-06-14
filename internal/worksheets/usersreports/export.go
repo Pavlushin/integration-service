@@ -16,7 +16,7 @@ type ExportStorage interface {
 	GetMastersInLink(ctx context.Context, locationCode1C *string, linkIDs []int) ([]MasterRow, error)
 	GetLastInactiveMastersInLink(ctx context.Context, locationCode1C *string, linkIDs []int) ([]MasterRow, error)
 	GetMainReports(ctx context.Context, dateFrom string, dateTo string, locationCode1C *string) ([]MainReportRow, error)
-	GetUserReports(ctx context.Context, dateFrom string, dateTo string, locationCode1C *string, employeeCode1C *string, linkIDs []int) ([]UserReportRow, error)
+	GetUserReports(ctx context.Context, employeeCode1C *string, reportIDs []int) ([]UserReportRow, error)
 	GetSheetFlagsByLocationCodes(ctx context.Context, locationCodes1C []string) (map[string]int, error)
 }
 
@@ -64,9 +64,13 @@ func (s *Service) Export(ctx context.Context, req Request) ([]byte, error) {
 		return nil, fmt.Errorf("load main reports: %w", err)
 	}
 
-	userReports, err := s.storage.GetUserReports(ctx, req.DateFrom, req.DateTo, req.LocationCode1C, req.EmployeeCode1C, linkIDs)
-	if err != nil {
-		return nil, fmt.Errorf("load user reports: %w", err)
+	reportIDs := mainReportIDs(mainReports)
+	userReports := make([]UserReportRow, 0)
+	if len(reportIDs) > 0 {
+		userReports, err = s.storage.GetUserReports(ctx, req.EmployeeCode1C, reportIDs)
+		if err != nil {
+			return nil, fmt.Errorf("load user reports: %w", err)
+		}
 	}
 
 	mastersByLink := buildMastersByLink(masters)
@@ -287,6 +291,22 @@ func buildUserReportsByReport(rows []UserReportRow) map[int][]UserReport {
 	}
 
 	return userReportsByReport
+}
+
+func mainReportIDs(rows []MainReportRow) []int {
+	seen := make(map[int]struct{}, len(rows))
+	result := make([]int, 0, len(rows))
+	for _, row := range rows {
+		if row.ReportID <= 0 {
+			continue
+		}
+		if _, ok := seen[row.ReportID]; ok {
+			continue
+		}
+		seen[row.ReportID] = struct{}{}
+		result = append(result, row.ReportID)
+	}
+	return result
 }
 
 func uniqueNonEmptyStrings(values []string) []string {

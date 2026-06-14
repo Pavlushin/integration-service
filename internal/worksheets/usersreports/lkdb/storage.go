@@ -214,21 +214,21 @@ func (s *Storage) GetMainReports(ctx context.Context, dateFrom string, dateTo st
 	return result, nil
 }
 
-func (s *Storage) GetUserReports(ctx context.Context, dateFrom string, dateTo string, locationCode1C *string, employeeCode1C *string, linkIDs []int) ([]usersreports.UserReportRow, error) {
-	filteredLinkIDs := filterPositiveIDs(linkIDs)
-	if len(filteredLinkIDs) == 0 {
-		return s.queryUserReportsChunk(ctx, dateFrom, dateTo, locationCode1C, employeeCode1C, nil)
+func (s *Storage) GetUserReports(ctx context.Context, employeeCode1C *string, reportIDs []int) ([]usersreports.UserReportRow, error) {
+	filteredReportIDs := filterPositiveIDs(reportIDs)
+	if len(filteredReportIDs) == 0 {
+		return nil, nil
 	}
 
 	const chunkSize = 250
 	result := make([]usersreports.UserReportRow, 0)
-	for start := 0; start < len(filteredLinkIDs); start += chunkSize {
+	for start := 0; start < len(filteredReportIDs); start += chunkSize {
 		end := start + chunkSize
-		if end > len(filteredLinkIDs) {
-			end = len(filteredLinkIDs)
+		if end > len(filteredReportIDs) {
+			end = len(filteredReportIDs)
 		}
 
-		rows, err := s.queryUserReportsChunk(ctx, dateFrom, dateTo, locationCode1C, employeeCode1C, filteredLinkIDs[start:end])
+		rows, err := s.queryUserReportsChunk(ctx, employeeCode1C, filteredReportIDs[start:end])
 		if err != nil {
 			return nil, err
 		}
@@ -239,10 +239,10 @@ func (s *Storage) GetUserReports(ctx context.Context, dateFrom string, dateTo st
 	return result, nil
 }
 
-func (s *Storage) queryUserReportsChunk(ctx context.Context, dateFrom string, dateTo string, locationCode1C *string, employeeCode1C *string, linkIDs []int) ([]usersreports.UserReportRow, error) {
+func (s *Storage) queryUserReportsChunk(ctx context.Context, employeeCode1C *string, reportIDs []int) ([]usersreports.UserReportRow, error) {
 	query := `
-		select
-			ur.report_id,
+			select
+				ur.report_id,
 			ur.id,
 			ur.link_id,
 			ur.user_code1c,
@@ -252,29 +252,20 @@ func (s *Storage) queryUserReportsChunk(ctx context.Context, dateFrom string, da
 			coalesce(ur.val_1c_confirm, 0) as val_1c_confirm,
 			wt.work_name as time_type_name,
 			wt.description as time_type_description,
-			coalesce(ur.hours_count, 0) as master_hours,
-			coalesce(ur.dispatcher_hours, 0) as dispatcher_hours
-		from worksheets__users_reports ur
-			join worksheets__work_Type wt on ur.time_type = wt.id
-			join worksheets__work_tasks wwt on wwt.link_id = ur.link_id
-			join worksheets__objects o on o.id = wwt.object_id
-		where ur.report_date >= ? and ur.report_date <= ?
-	`
+				coalesce(ur.hours_count, 0) as master_hours,
+				coalesce(ur.dispatcher_hours, 0) as dispatcher_hours
+			from worksheets__users_reports ur
+				join worksheets__work_Type wt on ur.time_type = wt.id
+			where ur.report_id in (` + placeholders(len(reportIDs)) + `)
+		`
 
-	args := []any{dateFrom, dateTo}
-	if locationCode1C != nil && *locationCode1C != "" {
-		query += ` and o.object_code1c = ?`
-		args = append(args, *locationCode1C)
+	args := make([]any, 0, len(reportIDs)+1)
+	for _, reportID := range reportIDs {
+		args = append(args, reportID)
 	}
 	if employeeCode1C != nil && *employeeCode1C != "" {
 		query += ` and ur.user_code1c = ?`
 		args = append(args, *employeeCode1C)
-	}
-	if len(linkIDs) > 0 {
-		query += ` and ur.link_id in (` + placeholders(len(linkIDs)) + `)`
-		for _, linkID := range linkIDs {
-			args = append(args, linkID)
-		}
 	}
 	query += ` order by ur.link_id`
 
